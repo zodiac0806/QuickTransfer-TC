@@ -161,7 +161,7 @@ public sealed unsafe partial class Plugin
 
             var scale = addon->Scale <= 0 ? 1f : addon->Scale;
 
-            var candidates = new List<(nint Ddi, float Area)>();
+            var candidates = new List<(nint Ddi, float Area, int ListIndex)>();
             var inspected = 0;
             CollectCellsUnderCursor(&addon->UldManager, mouseX, mouseY, scale, 0, candidates, ref inspected);
 
@@ -176,8 +176,9 @@ public sealed unsafe partial class Plugin
 
             var seen = new List<string>();
             var slotOnly = -1;
+            var listIndex = candidates.Count > 0 ? candidates[0].ListIndex : -1;
 
-            foreach (var (ddiPtr, _) in candidates)
+            foreach (var (ddiPtr, _, _) in candidates)
             {
                 if (!TryGetSlotFromDragDropInterface((AtkDragDropInterface*)ddiPtr, out var t, out var sl) || sl < 0)
                     continue;
@@ -214,10 +215,12 @@ public sealed unsafe partial class Plugin
                 }
 
                 diag = $"分頁 {page} 的第 {slotOnly} 格是空的，判定分頁解析錯誤，不動作（payload=[{string.Join(" ", seen)}]）";
+                DumpCompanyChestState(addon, listIndex);
                 return false;
             }
 
-            diag = $"游標({mouseX},{mouseY}) 命中 {candidates.Count} 個節點，掃過 {inspected} 個，但解不出分頁，payload=[{string.Join(" ", seen)}]";
+            diag = $"游標({mouseX},{mouseY}) 命中 {candidates.Count}／掃過 {inspected}，解不出分頁，payload=[{string.Join(" ", seen)}] listIndex={listIndex}";
+            DumpCompanyChestState(addon, listIndex);
             return false;
         }
         catch (Exception ex)
@@ -225,6 +228,79 @@ public sealed unsafe partial class Plugin
             diag = $"例外 {ex.GetType().Name}";
             Log.Warning(ex, "[QuickTransfer] 儲物櫃命中測試失敗。");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 解不出分頁時，把實際狀態倒到聊天視窗。猜了三輪都沒中，不要再猜——把遊戲現在到底
+    /// 是什麼狀態攤開來看。log 檔在這台機器上寫不進去，所以一律走 ChatGui。
+    /// </summary>
+    private void DumpCompanyChestState(AtkUnitBase* addon, int listIndex)
+    {
+        try
+        {
+            var inv = InventoryManager.Instance();
+            if (inv == null)
+                return;
+
+            // 1) 各分頁目前的實際內容
+            var pageInfo = new List<string>();
+            foreach (var t in Enum.GetValues<InventoryType>())
+            {
+                if (!IsCompanyChestType(t))
+                    continue;
+
+                var container = inv->GetInventoryContainer(t);
+                if (container == null)
+                {
+                    pageInfo.Add($"{(int)t}:無");
+                    continue;
+                }
+
+                var size = (int)container->Size;
+                var used = 0;
+                for (var i = 0; i < size; i++)
+                {
+                    var it = container->GetInventorySlot(i);
+                    if (it != null && it->ItemId != 0)
+                        used++;
+                }
+
+                pageInfo.Add($"{(int)t}:{used}/{size}");
+            }
+
+            ChatGui.Print($"[QT/dump] 分頁內容 {string.Join(" ", pageInfo)}");
+
+            // 2) 上游三條分頁解析各自的結果
+            var hovered = lastHoverCompanyChestPage;
+            var hoverStr = hovered == null
+                ? "無"
+                : $"{(int)hovered.Value.Page}(age={Environment.TickCount64 - hovered.Value.SeenAtMs}ms)";
+
+            var fromAddonStr = TryResolveCompanyChestPageFromAddon(addon, out var fa) ? ((int)fa).ToString() : "失敗";
+            var fromValuesStr = TryResolveCompanyChestSelectedPageFromAtkValues(addon->Id, out var fv) ? ((int)fv).ToString() : "失敗";
+
+            ChatGui.Print($"[QT/dump] 分頁解析 hover={hoverStr} addon={fromAddonStr} atkvalues={fromValuesStr} 設定頁數={Configuration.CompanyChestCompartments}");
+
+            // 3) 如果 listIndex 有值，看看它在哪一個分頁對得上「有東西」
+            if (listIndex >= 0)
+            {
+                var matches = new List<string>();
+                foreach (var t in Enum.GetValues<InventoryType>())
+                {
+                    if (!IsCompanyChestType(t))
+                        continue;
+
+                    if (TryGetItemInfo(t, listIndex, out var id, out _, out var q) && id != 0)
+                        matches.Add($"{(int)t}→{DescribeItem(id)}x{q}");
+                }
+
+                ChatGui.Print($"[QT/dump] listIndex={listIndex} 在各頁對應到：{(matches.Count > 0 ? string.Join(" ", matches) : "都是空的")}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[QuickTransfer] 儲物櫃狀態傾印失敗。");
         }
     }
 
@@ -273,7 +349,7 @@ public sealed unsafe partial class Plugin
         float mouseY,
         float scale,
         int depth,
-        List<(nint Ddi, float Area)> candidates,
+        List<(nint Ddi, float Area, int ListIndex)> candidates,
         ref int inspected)
     {
         if (uld == null || depth > 10)
@@ -295,7 +371,10 @@ public sealed unsafe partial class Plugin
             if (type is ComponentType.DragDrop or ComponentType.ListItemRenderer)
             {
                 inspected++;
-                TryAddCandidate(node, GetDdi(component, type), mouseX, mouseY, scale, candidates);
+                var listIdx = type == ComponentType.ListItemRenderer
+                    ? ((AtkComponentListItemRenderer*)component)->ListItemIndex
+                    : -1;
+                TryAddCandidate(node, GetDdi(component, type), mouseX, mouseY, scale, listIdx, candidates);
             }
             else if (type == ComponentType.List)
             {
@@ -319,7 +398,7 @@ public sealed unsafe partial class Plugin
                         continue;
 
                     inspected++;
-                    TryAddCandidate(resNode, GetRendererDdi(renderer), mouseX, mouseY, scale, candidates);
+                    TryAddCandidate(resNode, GetRendererDdi(renderer), mouseX, mouseY, scale, renderer->ListItemIndex, candidates);
                 }
             }
 
@@ -358,7 +437,8 @@ public sealed unsafe partial class Plugin
         float mouseX,
         float mouseY,
         float scale,
-        List<(nint Ddi, float Area)> candidates)
+        int listIndex,
+        List<(nint Ddi, float Area, int ListIndex)> candidates)
     {
         if (node == null || ddi == null)
             return;
@@ -374,7 +454,7 @@ public sealed unsafe partial class Plugin
         if (mouseX < x || mouseX > x + w || mouseY < y || mouseY > y + h)
             return;
 
-        candidates.Add(((nint)ddi, w * h));
+        candidates.Add(((nint)ddi, w * h, listIndex));
     }
 
 
