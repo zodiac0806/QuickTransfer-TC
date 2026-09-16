@@ -1791,13 +1791,12 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             Configuration.EnableBulkTransfer &&
             string.Equals(args.AddonName, FreeCompanyChestAddonName, StringComparison.OrdinalIgnoreCase))
         {
-            if (!TryResolveHoveredSlot(now, out var hoverType, out var hoverSlot) ||
+            if (!TryResolveHoveredSlot(now, out var hoverType, out var hoverSlot, out var hoverDiag) ||
                 !IsCompanyChestType(hoverType))
             {
                 // 解析不到起點格就講出來，不然使用者只會看到「按了沒反應」。
-                ChatGui.Print("[QuickTransfer] 批次搬運：抓不到你點的是儲物櫃哪一格。把滑鼠停在該格上再按一次 Ctrl＋Shift＋右鍵。");
-                if (Configuration.DebugMode)
-                    Log.Information($"[QuickTransfer] 批次搬運（儲物櫃）解析失敗：type={hoverType} slot={hoverSlot}");
+                // 診斷一律印在聊天視窗，不要只寫 log——log 檔可能早就滿了寫不進去。
+                ChatGui.Print($"[QuickTransfer/v2] 批次搬運：抓不到儲物櫃格子。{hoverDiag}");
                 return;
             }
 

@@ -84,12 +84,15 @@ public sealed unsafe partial class Plugin
     ///   3. hover 事件當下存下來的 AtkDragDropInterface 指標（事後讀，可能已失效）。
     /// </summary>
     private bool TryResolveHoveredSlot(long now, out InventoryType invType, out int slot)
+        => TryResolveHoveredSlot(now, out invType, out slot, out _);
+
+    private bool TryResolveHoveredSlot(long now, out InventoryType invType, out int slot, out string diag)
     {
         invType = default;
         slot = -1;
 
         // 1) 游標命中測試。
-        if (TryResolveCompanyChestCellUnderCursor(out invType, out slot))
+        if (TryResolveCompanyChestCellUnderCursor(out invType, out slot, out diag))
             return true;
 
         // 2) hover 當下 decode 好的格子。
@@ -104,7 +107,10 @@ public sealed unsafe partial class Plugin
         // 3) 事後讀 hover 指標。
         var hover = lastHoverDdi;
         if (hover == null || now - hover.Value.SeenAtMs > 3000)
+        {
+            diag += hover == null ? "；hover 無記錄" : $"；hover 過期 {now - hover.Value.SeenAtMs}ms";
             return false;
+        }
 
         try
         {
@@ -125,19 +131,26 @@ public sealed unsafe partial class Plugin
     /// 台服跟其他服不見得一樣，讀錯了會搬到完全不相干的格子——這種錯誤比「沒反應」危險得多。
     /// 節點命中測試沒有這個問題：payload 是節點自己帶的，版本無關。
     /// </summary>
-    private bool TryResolveCompanyChestCellUnderCursor(out InventoryType invType, out int slot)
+    private bool TryResolveCompanyChestCellUnderCursor(out InventoryType invType, out int slot, out string diag)
     {
         invType = default;
         slot = -1;
+        diag = string.Empty;
 
         try
         {
             if (!TryGetVisibleAddon(FreeCompanyChestAddonName, out var addon, WideAddonSearchMaxIndex) || addon == null)
+            {
+                diag = "找不到 FreeCompanyChest addon";
                 return false;
+            }
 
             // 用 Win32 取游標，不要在非繪製時機呼叫 ImGui。上游已經有這個 helper。
             if (!TryGetClientCursorPos(out var mouseX, out var mouseY))
+            {
+                diag = "取不到游標座標";
                 return false;
+            }
 
             var scale = addon->Scale <= 0 ? 1f : addon->Scale;
 
@@ -147,21 +160,22 @@ public sealed unsafe partial class Plugin
 
             if (hit == null)
             {
-                if (Configuration.DebugMode)
-                    Log.Information($"[QuickTransfer] 儲物櫃命中測試：游標 ({mouseX},{mouseY}) 沒壓到任何格子（掃過 {inspected} 個 DragDrop 節點）。");
+                diag = $"游標({mouseX},{mouseY}) scale={scale:F2} 未命中，掃過 {inspected} 個 DragDrop 節點";
                 return false;
             }
 
             if (!TryGetSlotFromDragDropInterface(hit, out invType, out slot) || slot < 0)
+            {
+                diag = $"命中節點但 payload 解不出格號（掃過 {inspected} 個）";
                 return false;
+            }
 
-            if (Configuration.DebugMode)
-                Log.Information($"[QuickTransfer] 儲物櫃命中測試：{invType}/{slot}（掃過 {inspected} 個 DragDrop 節點）。");
-
+            diag = $"{invType}/{slot}（掃過 {inspected} 個）";
             return true;
         }
         catch (Exception ex)
         {
+            diag = $"例外 {ex.GetType().Name}";
             Log.Warning(ex, "[QuickTransfer] 儲物櫃命中測試失敗。");
             return false;
         }
