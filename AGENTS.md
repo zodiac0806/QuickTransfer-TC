@@ -15,6 +15,7 @@ QuickTransfer.cs          主體（~4600 行）：服務注入、滑鼠／按鍵
                           addon 可見性判斷、公會儲物櫃的存入／整理流程
 ContextMenuHandler.cs     右鍵選單項目的「比對 → 選取 → 關閉」邏輯
 GameStrings.cs            ★TC 新增：從 Addon／LogMessage 資料表取當前語言字串
+BulkTransfer.cs           ★TC 新增：批次搬運狀態機（Ctrl＋Shift＋右鍵）
 InventoryHelpers.cs       容器類型／可見性判斷
 DragDropHelpers.cs        拖放與 slot 解析
 AtkValueHelpers.cs        AtkValue 字串讀取與 callback 產生
@@ -32,6 +33,8 @@ QuickTransferWindow.cs    設定視窗（已繁中化）
 | 公會儲物櫃存入／取出／整理 | `QuickTransfer.cs` 搜 `companyChest` |
 | 哪些 addon 名稱算「容器開著」 | `InventoryHelpers.cs`、`QuickTransfer.cs` 的 `AddVisible(...)` |
 | 設定視窗文案 | `QuickTransferWindow.cs` |
+| 批次搬運的方向判斷／掃格順序 | `BulkTransfer.cs` 的 `TryBuildBulkPlan`／`TryGetCurrentBulkSource` |
+| 數量視窗自動確認 | `QuickTransfer.cs` 的 `OnInputNumericPreSetup`／`TrySetInputNumericToMax` |
 
 ## CONVENTIONS
 
@@ -56,17 +59,35 @@ QuickTransferWindow.cs    設定視窗（已繁中化）
 | Addon 1389 | 自動整理 | Sort |
 | Addon 1390 | 撤銷整理 | Undo Sort（已整理的訊號） |
 | Addon 2950 | 取出 | RemoveFromCompanyChest |
+| Addon 2897 / 2898 | 請設定放入的數量。／請設定取出的數量。 | 儲物櫃數量視窗 |
+| Addon 915 / 914 | 請選擇要保管的數量。／請選擇要取出的數量。 | 僱員數量視窗 |
+| Addon 890 / 889 | 請選擇要放入的數量。／請選擇要取出的數量。 | 鞍囊數量視窗 |
 | LogMessage 1861 | 處理公會儲物櫃失敗。 | 儲物櫃忙碌退避 |
 | LogMessage 1873 | 無法保存道具，其他玩家正在使用儲物櫃。 | 同上 |
 | LogMessage 1874 | 無法取出道具，其他玩家正在使用儲物櫃。 | 同上 |
 
 dump 方式：用 Lumina 開 `<GamePath>\game\sqpack`，`LuminaOptions.DefaultExcelLanguage = Language.TraditionalChinese`（台服 exd 的語言標記是 TC Lumina fork 新增的 `TraditionalChinese = 8`，不設就 `GetExcelSheet` 回傳 null）。
 
+## 批次搬運（TC 新增功能）
+
+`Ctrl＋Shift＋右鍵` 一格 → 以該格為起點，往後整批搬到對面的容器。方向由「右鍵的是哪個容器」推出來，不用另外選；搬幾格看設定的 `BulkTransferCount`（0 = 到最後一格）。跑到一半再按一次同樣組合鍵就中止。
+
+實作要點：
+
+- **搬運用 `TryCompanyChestMoveItem`（＝`RaptureAtkModule::HandleItemMove`）**，跟拖放同一支。遊戲自己的檢查（綁定、裝備中、掛市場中…）全都還在。
+- **一次只送一筆，然後等來源格真的變動**才繼續（`HasSlotChanged`）。不要用固定 delay 硬送，會被伺服器擋掉而且無法察覺。
+- **「格」才是配額單位**：併堆只搬走一部分時同一格會再跑一次，此時不扣 `Remaining`。
+- 同一格重試 `BulkMaxStuckRetries` 次還是不動 → 判定這格搬不動（綁定等），跳過並計入 `Failed`。
+- 儲物櫃**只掃右鍵的那一頁**：其他分頁沒開過就沒載入，硬掃會讀到空資料。僱員與背包則用 `IsContainerLoaded` 過濾後全掃。
+- 搬運中途僱員／儲物櫃視窗關掉 → 立刻停手。
+
 ## ANTI-PATTERNS
 
 - ❌ 在 `ContextLabelMatches` 裡加寫死的中文字串。改資料表 row id，否則國際服玩家或日後台服改譯名就壞掉。
 - ❌ 自己算 slot 然後硬搬道具。這個插件的賣點就是「只點遊戲既有選單」，繞過選單＝繞過遊戲自己的合法性檢查。
 - ❌ 把 `TransferCooldownMs` 設成 0 然後回報「重複搬運」——那個冷卻就是防手滑的。
+- ❌ 批次搬運改成「固定間隔連續送」。一定要等來源格變動再送下一筆，否則伺服器擋掉時插件完全不知道，會一路空轉到逾時。
+- ❌ 在 `OnInputNumericPreSetup`／`TrySetInputNumericToMax` 裡用英文關鍵字判斷數量視窗種類。台服比不到，自動確認會整組失效——改用 `GameStrings.ClassifyQuantityPrompt`。
 
 ## 共用函式庫
 

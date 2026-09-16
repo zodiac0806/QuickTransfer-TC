@@ -110,6 +110,44 @@ public class QuickTransferWindow : Window, IDisposable
             ImGui.SameLine();
             ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（自動填數量並按下確定）");
 
+            // 批次搬運
+            ImGui.Spacing();
+            ImGui.Separator();
+            ImGui.TextColored(new Vector4(0.4f, 0.8f, 1f, 1f), "批次搬運（Ctrl＋Shift＋右鍵）");
+
+            var enableBulk = _config.EnableBulkTransfer;
+            if (ImGui.Checkbox("啟用批次搬運###EnableBulkTransfer", ref enableBulk))
+            {
+                _config.EnableBulkTransfer = enableBulk;
+                _config.Save();
+            }
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（以右鍵那一格為起點，往後整批搬）");
+
+            ImGui.Text("從起點往後搬幾格：");
+            ImGui.SameLine();
+            ImGui.SetNextItemWidth(100);
+            var bulkCount = _config.BulkTransferCount;
+            if (ImGui.InputInt("###BulkCount", ref bulkCount))
+            {
+                _config.BulkTransferCount = Math.Max(0, Math.Min(400, bulkCount));
+                _config.Save();
+            }
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（0 = 一路搬到最後一格）");
+
+            ImGui.Text("每格間隔（毫秒）：");
+            ImGui.SameLine();
+            ImGui.SetNextItemWidth(100);
+            var bulkDelay = _config.BulkTransferDelayMs;
+            if (ImGui.InputInt("###BulkDelay", ref bulkDelay))
+            {
+                _config.BulkTransferDelayMs = Math.Max(50, Math.Min(2000, bulkDelay));
+                _config.Save();
+            }
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(0.85f, 0.75f, 0.45f, 0.9f), "（調太低會被伺服器當連點擋掉）");
+
             // 操作冷卻
             ImGui.Spacing();
             ImGui.Text("操作冷卻（毫秒）：");
@@ -132,6 +170,7 @@ public class QuickTransferWindow : Window, IDisposable
             ImGui.BulletText("Shift＋右鍵：對目前開著的容器執行對應的搬運動作");
             ImGui.BulletText("Ctrl＋右鍵：鞍囊／僱員／公會儲物櫃開著時，優先做背包 ↔ 兵裝庫");
             ImGui.BulletText("Alt＋右鍵：把一堆道具對半拆分（在公會儲物櫃則是取出一半）");
+            ImGui.BulletText("Ctrl＋Shift＋右鍵：以這一格為起點整批搬（背包→僱員／儲物櫃，或反向搬回背包）。跑到一半再按一次就中止。");
             ImGui.BulletText("背包＋陸行鳥鞍囊：背包 →「放入陸行鳥鞍囊」，鞍囊 →「從陸行鳥鞍囊中取回」");
             ImGui.BulletText("兵裝庫＋陸行鳥鞍囊：兵裝庫 →「放入陸行鳥鞍囊」");
             ImGui.BulletText("背包＋僱員：背包 →「交給僱員保管」，僱員 →「從僱員處取回」");
@@ -151,6 +190,8 @@ public class QuickTransferWindow : Window, IDisposable
             ImGui.BulletText("Shift 只按一下就放開也沒關係，按鍵狀態是在選單開啟的瞬間就記下來的。");
             ImGui.BulletText("公會儲物櫃的存入走的是跟拖放同一個遊戲內部函式。");
             ImGui.BulletText("選單項目是用遊戲資料表比對的，切換客戶端語言一樣能用。");
+            ImGui.BulletText("批次搬運走的也是拖放那支函式，遊戲自己的檢查都還在；搬不動的格子會跳過並回報。");
+            ImGui.BulletText("批次搬運途中把僱員或儲物櫃視窗關掉，會立刻停手。");
             ImGui.Spacing();
 
             // 儲存

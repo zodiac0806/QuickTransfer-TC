@@ -31,6 +31,16 @@ internal static class GameStrings
     private const uint AddonUndoSort               = 1390; // 撤銷整理
     private const uint AddonRemoveFromCompanyChest = 2950; // 取出（部隊儲物櫃）
 
+    // ---- Addon 資料表（InputNumeric 數量視窗的提示文字）----
+    // 上游是用英文關鍵字（"store"／"remove"）判斷這是哪一種數量視窗，台服一律比不到，
+    // 結果就是「自動確認數量」對公會儲物櫃與僱員完全不會動作。同樣改成資料表比對。
+    private const uint AddonQtyStoreCompanyChest  = 2897; // 請設定放入的數量。
+    private const uint AddonQtyRemoveCompanyChest = 2898; // 請設定取出的數量。
+    private const uint AddonQtyEntrustRetainer    = 915;  // 請選擇要保管的數量。
+    private const uint AddonQtyRetrieveRetainer   = 914;  // 請選擇要取出的數量。
+    private const uint AddonQtyAddSaddlebag       = 890;  // 請選擇要放入的數量。
+    private const uint AddonQtyRemoveSaddlebag    = 889;  // 請選擇要取出的數量。
+
     // ---- LogMessage 資料表（部隊儲物櫃的錯誤訊息）----
     private const uint LogCompanyChestActionFailed = 1861; // 處理公會儲物櫃失敗。
     private const uint LogCompanyChestStoreBusy    = 1873; // 無法保存道具，其他玩家正在使用儲物櫃。
@@ -131,6 +141,49 @@ internal static class GameStrings
         var t = menuText.Trim();
         return (expected != null && t.Equals(expected, StringComparison.OrdinalIgnoreCase)) ||
                t.Equals("Undo Sort", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>數量視窗問的是「放入」還是「取出」。</summary>
+    public enum QuantityPromptKind
+    {
+        /// <summary>認不出來——呼叫端應該退回上游的英文判斷。</summary>
+        Unknown,
+
+        /// <summary>放入／保管（背包 → 僱員／儲物櫃／鞍囊）。</summary>
+        Store,
+
+        /// <summary>取出／取回（僱員／儲物櫃／鞍囊 → 背包）。</summary>
+        Remove,
+    }
+
+    private static readonly uint[] StorePromptRows  = [AddonQtyStoreCompanyChest, AddonQtyEntrustRetainer, AddonQtyAddSaddlebag];
+    private static readonly uint[] RemovePromptRows = [AddonQtyRemoveCompanyChest, AddonQtyRetrieveRetainer, AddonQtyRemoveSaddlebag];
+
+    /// <summary>
+    /// 把 InputNumeric 的提示文字歸類成放入／取出。
+    /// 認不出來時回傳 <see cref="QuantityPromptKind.Unknown"/>——這不是錯誤，代表呼叫端該退回英文判斷。
+    /// </summary>
+    public static QuantityPromptKind ClassifyQuantityPrompt(string prompt)
+    {
+        var t = prompt.Trim();
+        if (t.Length == 0)
+            return QuantityPromptKind.Unknown;
+
+        foreach (var rowId in StorePromptRows)
+        {
+            var expected = GetAddon(rowId);
+            if (expected != null && t.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                return QuantityPromptKind.Store;
+        }
+
+        foreach (var rowId in RemovePromptRows)
+        {
+            var expected = GetAddon(rowId);
+            if (expected != null && t.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                return QuantityPromptKind.Remove;
+        }
+
+        return QuantityPromptKind.Unknown;
     }
 
     /// <summary>部隊儲物櫃「別人正在用／操作失敗」的訊息（含上游的英文版，兩邊都認）。</summary>

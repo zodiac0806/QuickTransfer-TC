@@ -46,10 +46,19 @@ public sealed class Configuration : IPluginConfiguration
     public bool EnableVendorQuickSell { get; set; } = true;
     public bool AutoConfirmVendorSell { get; set; } = true;
 
+    // [TC] 批次搬運：Ctrl＋Shift＋右鍵，從點到的那一格開始往後整批搬。
+    public bool EnableBulkTransfer { get; set; } = true;
+
+    // 從起點往後搬幾格（是格數，不是道具數）。0 = 一路搬到該容器最後一格。
+    public int BulkTransferCount { get; set; } = 0;
+
+    // 每次搬運之間的間隔。太短會被伺服器當成連點擋下來。
+    public int BulkTransferDelayMs { get; set; } = 250;
+
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }
 
-public sealed unsafe class Plugin : IDalamudPlugin
+public sealed unsafe partial class Plugin : IDalamudPlugin
 {
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
@@ -1002,6 +1011,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Shift,
         Ctrl,
         Alt,
+
+        // [TC] Ctrl＋Shift 同時按住＝批次搬運。這個 mode 不走選單文字比對，
+        //      所以不需要在 ContextMenuHandler.ModifierMode 也加一份。
+        Bulk,
     }
 
     // Inventory/armoury uses this; saddlebags often do not, so we also use IContextMenu fallback.
@@ -1629,6 +1642,22 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var companyChestOpen = IsCompanyChestOpen();
         var specialOpen = saddlebagOpen || retainerOpen || companyChestOpen;
 
+        // [TC] Ctrl＋Shift＋右鍵：以點到的那一格為起點，整批搬。
+        if (mode == ModifierMode.Bulk)
+        {
+            if (!specialOpen)
+                return;
+
+            var bulkNow = Environment.TickCount64;
+            if (StartBulkTransfer(inventoryType, (uint)slot, bulkNow))
+            {
+                lastActionTickMs = bulkNow;
+                TryCloseCurrentContextMenu(agent);
+            }
+
+            return;
+        }
+
         // Ctrl is only enabled while a "special" container is open (Saddlebag or Retainer),
         // so Shift/Ctrl can be used to disambiguate behaviors.
         if (mode == ModifierMode.Ctrl && !specialOpen)
@@ -1748,6 +1777,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 pendingDeferredSortMenuClick = ((nint)args.AgentPtr, (nint)args.AddonPtr, now);
                 return;
             }
+        }
+
+        // [TC] 公會儲物櫃的格子走 MenuType.Default，不經過 OpenForItemSlot，
+        //      所以批次搬運要在這裡另外接一次，起點用滑鼠最後停留的那一格解析。
+        if (args.MenuType == ContextMenuType.Default &&
+            mode == ModifierMode.Bulk &&
+            Configuration.EnableBulkTransfer &&
+            string.Equals(args.AddonName, FreeCompanyChestAddonName, StringComparison.OrdinalIgnoreCase))
+        {
+            if (TryResolveHoveredSlot(now, out var hoverType, out var hoverSlot) &&
+                IsCompanyChestType(hoverType) &&
+                StartBulkTransfer(hoverType, (uint)hoverSlot, now))
+            {
+                lastActionTickMs = now;
+                ArmSuppressContextMenu(now, 1500);
+                pendingCloseContextMenuAtMs = now + 50;
+            }
+
+            return;
         }
 
         // Free Company Chest uses MenuType.Default (not Inventory).
@@ -2044,6 +2092,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 pendingMoveSawInputNumeric = false;
             }
         }
+
+        // [TC] 批次搬運狀態機（Ctrl＋Shift＋右鍵起動）。
+        if (Configuration.EnableBulkTransfer)
+            ProcessBulkTransfer(now);
 
         // Company Chest deposit state machine (Inventory -> FC Chest).
         if (Configuration.EnableCompanyChest)
@@ -2710,7 +2762,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         try
         {
-            if (!Configuration.EnableCompanyChest)
+            // [TC] 批次搬運也會用到僱員／鞍囊的數量視窗，不能只綁在公會儲物櫃的開關上。
+            if (!Configuration.EnableCompanyChest && !Configuration.EnableBulkTransfer)
                 return;
 
             if (!pendingCompanyChestNumericArmed)
@@ -2719,8 +2772,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (!string.Equals(args.AddonName, InputNumericAddonName, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            // Only touch this dialog if the Company Chest is open (avoid affecting unrelated InputNumeric uses).
-            if (!IsCompanyChestOpen())
+            // Only touch this dialog while one of the containers we drive is open
+            // (avoid affecting unrelated InputNumeric uses).
+            // [TC] 上游只認公會儲物櫃，所以僱員／鞍囊的數量視窗永遠不會被自動確認，批次搬運會卡在這裡。
+            if (!IsCompanyChestOpen() && !IsRetainerOpen() && !IsSaddlebagOpen())
                 return;
 
             if (args is not AddonSetupArgs setup)
@@ -2738,11 +2793,27 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (pendingNumericKind != PendingNumericKind.None)
             {
                 var prompt = values[6].Type is AtkValueType.String or AtkValueType.ManagedString ? ReadAtkValueString(values[6]) : string.Empty;
-                if (pendingNumericKind == PendingNumericKind.Store && !prompt.Contains("store", StringComparison.OrdinalIgnoreCase))
-                    return;
-                if (pendingNumericKind == PendingNumericKind.Remove && !prompt.Contains("remove", StringComparison.OrdinalIgnoreCase))
-                    return;
-                if (pendingNumericKind == PendingNumericKind.Sell && !prompt.Contains("sell", StringComparison.OrdinalIgnoreCase))
+                // [TC] 同上：先用資料表分類，認不出來才退回英文判斷。
+                var promptKind = GameStrings.ClassifyQuantityPrompt(prompt);
+                if (pendingNumericKind == PendingNumericKind.Store)
+                {
+                    if (promptKind == GameStrings.QuantityPromptKind.Remove)
+                        return;
+                    if (promptKind == GameStrings.QuantityPromptKind.Unknown &&
+                        !prompt.Contains("store", StringComparison.OrdinalIgnoreCase))
+                        return;
+                }
+                if (pendingNumericKind == PendingNumericKind.Remove)
+                {
+                    if (promptKind == GameStrings.QuantityPromptKind.Store)
+                        return;
+                    if (promptKind == GameStrings.QuantityPromptKind.Unknown &&
+                        !prompt.Contains("remove", StringComparison.OrdinalIgnoreCase))
+                        return;
+                }
+                if (pendingNumericKind == PendingNumericKind.Sell &&
+                    promptKind == GameStrings.QuantityPromptKind.Unknown &&
+                    !prompt.Contains("sell", StringComparison.OrdinalIgnoreCase))
                     return;
                 // For "Move" we accept any prompt while the Company Chest is open (used for internal stack/organize moves).
             }
@@ -4092,10 +4163,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
             var prompt = promptVal->Type is AtkValueType.String or AtkValueType.ManagedString ? ReadAtkValueString(*promptVal) : string.Empty;
 
             // Guard: only confirm prompts we expect.
-            if (kind == PendingNumericKind.Store && !prompt.Contains("store", StringComparison.OrdinalIgnoreCase))
-                return false;
-            if (kind == PendingNumericKind.Remove && !prompt.Contains("remove", StringComparison.OrdinalIgnoreCase))
-                return false;
+            // [TC] 先用遊戲資料表判斷這是「放入」還是「取出」的數量視窗；
+            //      認得出來就以它為準，認不出來（非台服／未知提示）才退回上游的英文判斷。
+            var promptKind = GameStrings.ClassifyQuantityPrompt(prompt);
+            if (kind == PendingNumericKind.Store)
+            {
+                if (promptKind == GameStrings.QuantityPromptKind.Remove)
+                    return false;
+                if (promptKind == GameStrings.QuantityPromptKind.Unknown &&
+                    !prompt.Contains("store", StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+            if (kind == PendingNumericKind.Remove)
+            {
+                if (promptKind == GameStrings.QuantityPromptKind.Store)
+                    return false;
+                if (promptKind == GameStrings.QuantityPromptKind.Unknown &&
+                    !prompt.Contains("remove", StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
             // Trade dialogs may be localized; if we're in Trade mode and Trade window is open, accept it
             // (similar to how Split works - we trust the context rather than requiring exact prompt text)
             if (kind == PendingNumericKind.Trade && !prompt.Contains("trade", StringComparison.OrdinalIgnoreCase))
@@ -4502,11 +4588,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private ModifierMode? GetModifierModeLatched(long nowMs)
     {
         const int latchWindowMs = 180;
-        if (KeyState[VirtualKey.MENU] || nowMs - lastAltSeenMs <= latchWindowMs)
+        var altDown = KeyState[VirtualKey.MENU] || nowMs - lastAltSeenMs <= latchWindowMs;
+        var ctrlDown = KeyState[VirtualKey.CONTROL] || nowMs - lastCtrlSeenMs <= latchWindowMs;
+        var shiftDown = KeyState[VirtualKey.SHIFT] || nowMs - lastShiftSeenMs <= latchWindowMs;
+
+        // [TC] Ctrl＋Shift 要排在最前面判斷，否則會被下面的 Ctrl 分支先吃掉。
+        if (Configuration.EnableBulkTransfer && ctrlDown && shiftDown && !altDown)
+            return ModifierMode.Bulk;
+
+        if (altDown)
             return ModifierMode.Alt;
-        if (KeyState[VirtualKey.CONTROL] || nowMs - lastCtrlSeenMs <= latchWindowMs)
+        if (ctrlDown)
             return ModifierMode.Ctrl;
-        if (KeyState[VirtualKey.SHIFT] || nowMs - lastShiftSeenMs <= latchWindowMs)
+        if (shiftDown)
             return ModifierMode.Shift;
         return null;
     }
