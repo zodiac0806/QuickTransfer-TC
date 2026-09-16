@@ -238,8 +238,15 @@ public sealed unsafe partial class Plugin
             pageCandidates.Sort(static (a, b) => ((int)a).CompareTo((int)b));
 
             if (TryResolveChestPageIndex(addon, radios, out var pageIndex, out var how) &&
-                pageIndex >= 0 && pageIndex < pageCandidates.Count)
+                pageIndex >= 0)
             {
+                if (pageIndex >= pageCandidates.Count)
+                {
+                    // 選到水晶或 Gil 的分頁，那裡沒有道具格可搬。
+                    diag = $"目前開的是水晶／Gil 分頁（{how}），沒有道具格可搬";
+                    return false;
+                }
+
                 var page = pageCandidates[pageIndex];
                 if (TryGetItemInfo(page, rank, out var itemId, out _, out var qty) && itemId != 0 && qty != 0)
                 {
@@ -314,25 +321,31 @@ public sealed unsafe partial class Plugin
         pageIndex = -1;
         how = string.Empty;
 
-        // 1) 收集到的分頁鈕裡，哪一顆 IsChecked。
-        for (var i = 0; i < radios.Count; i++)
+        // 分頁鈕必須照 node id 排序才對得上分頁順序。
+        // 節點樹的走訪順序是倒的（實測收到 16,15,14,13,12,11,10），直接用收集順序當索引會錯頁。
+        // 另外 7 顆 = 5 個道具分頁 + 水晶 + Gil，所以索引超出道具分頁數就是選到水晶/Gil，不是道具頁。
+        var sorted = new List<(uint NodeId, bool Checked, bool Selected)>(radios);
+        sorted.Sort(static (a, b) => a.NodeId.CompareTo(b.NodeId));
+
+        // 1) 哪一顆 IsChecked。
+        for (var i = 0; i < sorted.Count; i++)
         {
-            if (!radios[i].Checked)
+            if (!sorted[i].Checked)
                 continue;
 
             pageIndex = i;
-            how = $"radio#{i} IsChecked";
+            how = $"node {sorted[i].NodeId} → 第 {i + 1} 頁";
             return true;
         }
 
         // 2) 退而求其次，IsSelected。
-        for (var i = 0; i < radios.Count; i++)
+        for (var i = 0; i < sorted.Count; i++)
         {
-            if (!radios[i].Selected)
+            if (!sorted[i].Selected)
                 continue;
 
             pageIndex = i;
-            how = $"radio#{i} IsSelected";
+            how = $"node {sorted[i].NodeId} → 第 {i + 1} 頁 (IsSelected)";
             return true;
         }
 
