@@ -574,7 +574,7 @@ public sealed unsafe partial class Plugin
         if (bulk.Active)
         {
             // 再按一次＝中止，比讓它跑完直覺。
-            StopBulkTransfer("已中止。");
+            StopBulkTransfer("Aborted.".L());
             return true;
         }
 
@@ -609,14 +609,15 @@ public sealed unsafe partial class Plugin
         companyChestBusyHits = 0;
         companyChestBusyUntilMs = 0;
 
-        var scope = count <= 0 ? "到最後一格" : $"{count} 格";
+        var scope = count <= 0 ? "until the last slot".L() : "?? slots".L(count);
 
         // 把起點那格的道具名印出來：抓錯格子的話使用者一眼就看得出來，可以馬上再按一次中止。
         var startItem = TryGetItemInfo(sourceType, (int)sourceSlot, out var startItemId, out _, out var startQty) && startItemId != 0
-            ? $"（{DescribeItem(startItemId)}x{startQty}）"
+            ? $" ({DescribeItem(startItemId)} x{startQty})"
             : string.Empty;
 
-        ChatGui.Print($"[QuickTransfer] 開始批次搬運：{DescribeContainer(sourceType)} 畫面順序第 {startIndex + 1} 格{startItem}起，{scope}。再按一次 Ctrl＋Shift＋右鍵可中止。");
+        ChatGui.Print("[QuickTransfer] Bulk transfer started: ?? slot ?? (display order)?? -> ??. Press Ctrl+Shift+RClick again to abort."
+            .L(DescribeContainer(sourceType), startIndex + 1, startItem, scope));
         return true;
     }
 
@@ -923,14 +924,14 @@ public sealed unsafe partial class Plugin
 
         if (now > bulk.ExpiresAtMs)
         {
-            StopBulkTransfer("逾時中止。");
+            StopBulkTransfer("Timed out.".L());
             return;
         }
 
         // 來源／目標的視窗被關掉就停手，不然會對著已經失效的容器亂搬。
         if (!IsRetainerOpen() && !IsCompanyChestOpen() && !IsSaddlebagOpen() && !IsArmouryOpen())
         {
-            StopBulkTransfer("容器視窗已關閉。");
+            StopBulkTransfer("The container window was closed.".L());
             return;
         }
 
@@ -950,7 +951,7 @@ public sealed unsafe partial class Plugin
             if (bulk.InputNumericSeenAtMs == 0)
                 bulk.InputNumericSeenAtMs = now;
             else if (now - bulk.InputNumericSeenAtMs > BulkInputNumericStallMs)
-                StopBulkTransfer("數量視窗沒有被處理（自動確認沒作用？），中止。視窗留給你自己決定。");
+                StopBulkTransfer("The quantity dialog was not handled (auto-confirm off?); aborting and leaving it open.".L());
 
             return;
         }
@@ -1001,7 +1002,7 @@ public sealed unsafe partial class Plugin
                 // 依使用者要求：直接中止，不要跳過繼續跑——跳過會讓人搞不清楚到底停在哪、
                 // 也可能一路撞上一整排都搬不動的東西。
                 var stuckName = DescribeItem(bulk.PendingItemId);
-                StopBulkTransfer($"「{stuckName}」試了 {maxRetries} 次都搬不動，中止。");
+                StopBulkTransfer("'??' would not move after ?? attempts; aborting.".L(stuckName, maxRetries));
                 return;
             }
 
@@ -1010,14 +1011,14 @@ public sealed unsafe partial class Plugin
             bulk.NextAttemptAtMs = now + retryDelay;
 
             if (involvesChest && bulk.StuckCount == 1)
-                ChatGui.Print($"[QuickTransfer] 儲物櫃回應慢（伺服器節流），放慢重試中……");
+                ChatGui.Print("[QuickTransfer] Company Chest is responding slowly (server throttling); slowing down.".L());
 
             return;
         }
 
         if (bulk.Remaining <= 0)
         {
-            StopBulkTransfer("完成。");
+            StopBulkTransfer("Done.".L());
             return;
         }
 
@@ -1029,7 +1030,7 @@ public sealed unsafe partial class Plugin
         {
             if (!TryGetCurrentBulkSource(out var srcType, out var srcSlot))
             {
-                StopBulkTransfer("已掃到最後一格。");
+                StopBulkTransfer("Reached the last slot.".L());
                 return;
             }
 
@@ -1066,7 +1067,7 @@ public sealed unsafe partial class Plugin
             var maxStack = GetItemStackSize(itemId);
             if (!TryFindBulkDestSlot(destTypes, itemId, isHq, maxStack, out var dstType, out var dstSlot))
             {
-                StopBulkTransfer($"目標已滿（{DescribeContainer(destTypes.Length > 0 ? destTypes[0] : srcType)} 沒有空位）。");
+                StopBulkTransfer("Destination is full (?? has no free slot).".L(DescribeContainer(destTypes.Length > 0 ? destTypes[0] : srcType)));
                 return;
             }
 
@@ -1086,7 +1087,7 @@ public sealed unsafe partial class Plugin
 
             if (!TryCompanyChestMoveItem(srcType, srcSlot, dstType, dstSlot, keepAliveForInputNumeric: true))
             {
-                StopBulkTransfer($"送出搬運失敗（「{DescribeItem(itemId)}」），中止。");
+                StopBulkTransfer("Failed to submit the move for '??'; aborting.".L(DescribeItem(itemId)));
                 return;
             }
 
@@ -1216,8 +1217,8 @@ public sealed unsafe partial class Plugin
         var skipped = bulk.Skipped;
         bulk = default;
 
-        var tail = skipped > 0 ? $"，依清單跳過 {skipped} 格" : string.Empty;
-        ChatGui.Print($"[QuickTransfer] 批次搬運結束：{why} 共搬了 {moved} 格{tail}。");
+        var tail = skipped > 0 ? " " + "?? slots skipped by the list.".L(skipped) : string.Empty;
+        ChatGui.Print("[QuickTransfer] Bulk transfer finished: ?? Moved ?? slots.??".L(why, moved, tail));
     }
 
     /// <summary>
@@ -1250,7 +1251,7 @@ public sealed unsafe partial class Plugin
     public static string DescribeItem(uint itemId)
     {
         if (itemId == 0)
-            return "未知道具";
+            return "unknown item".L();
 
         try
         {
@@ -1267,21 +1268,21 @@ public sealed unsafe partial class Plugin
             // 名字拿不到不是什麼大事，照樣回報。
         }
 
-        return $"道具#{itemId}";
+        return "item #??".L(itemId);
     }
 
     private static string DescribeContainer(InventoryType type)
     {
         if (IsPlayerInventoryType(type))
-            return "背包";
+            return "Inventory".L();
         if (IsRetainerType(type))
-            return "僱員背包";
+            return "Retainer".L();
         if (IsCompanyChestType(type))
-            return "公會儲物櫃";
+            return "Company Chest".L();
         if (IsSaddlebagType(type))
-            return "陸行鳥鞍囊";
+            return "Saddlebag".L();
         if (IsArmouryType(type))
-            return "兵裝庫";
+            return "Armoury Chest".L();
         return type.ToString();
     }
 }

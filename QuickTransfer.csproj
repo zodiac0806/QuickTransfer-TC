@@ -22,4 +22,8 @@
     <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) and Exists('$(_DalamudDevHooksPath)Dalamud.dll') and !Exists('$(DalamudLibPath)Dalamud.dll')">
         <DalamudLibPath>$(_DalamudDevHooksPath)</DalamudLibPath>
     </PropertyGroup>
+    <!-- [TC] 譯文檔要跟著 DLL 一起出貨，不然執行期找不到就整個退回英文。 -->
+    <ItemGroup>
+        <Content Include="LanguageChineseTraditional.ini" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
 </Project>

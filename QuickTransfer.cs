@@ -1486,6 +1486,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
         // Lifecycle hooks:
         // Register with explicit addon names; wildcard registration is not reliable across Dalamud versions/builds.
+        // [TC] 譯文檔要在任何 UI 文字被讀之前載入。
+        Loc.Init();
+
         AddonLifecycle.RegisterListener(AddonEvent.PreSetup, InputNumericAddonName, OnInputNumericPreSetup);
         AddonLifecycle.RegisterListener(AddonEvent.PreDraw, ContextMenuAddonName, OnAddonPreDraw);
         AddonLifecycle.RegisterListener(AddonEvent.PreDraw, InputNumericAddonName, OnAddonPreDraw);
@@ -1804,7 +1807,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             {
                 // 解析不到起點格就講出來，不然使用者只會看到「按了沒反應」。
                 // 診斷一律印在聊天視窗，不要只寫 log——log 檔可能早就滿了寫不進去。
-                ChatGui.Print($"[QuickTransfer/v2] 批次搬運：抓不到儲物櫃格子。{hoverDiag}");
+                ChatGui.Print("[QuickTransfer] Bulk transfer: could not tell which Company Chest slot you clicked. ??".L(hoverDiag));
                 return;
             }
 

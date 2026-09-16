@@ -38,6 +38,15 @@ QuickTransferWindow.cs    設定視窗（已繁中化）
 
 ## CONVENTIONS
 
+- **翻譯外部化：程式碼一律保留英文原文當鍵值，譯文放 `LanguageChineseTraditional.ini`。** 直接把英文換成中文會同時毀掉兩件事——上游 diff 套不上來（原文不在原處了），以及翻譯在合併衝突裡被吃掉。新增介面文字時寫英文並加 `.L()`，再去 ini 補一行；**不要**直接寫中文。
+  - 檔案格式跟艦隊其他 TC fork（`AutoDuty-TC`／`Questionable-TC`／`Lifestream-TC`…）一致：`原文==譯文`、分隔 `==`、參數佔位 `??`、UTF-8、`
+` 換行、`;` 註解。譯文檔與艦隊工具互通。
+  - loader 是自寫的 `Loc.cs`（約 50 行），**沒有**用 ECommons 的 `.Loc()`：這個插件零 submodule、零第三方 NuGet，為了翻譯拉進 ECommons 並不划算，還得從此顧慮開發規範第 4 節的版本不變式。
+  - 查不到鍵值就回傳原文，所以漏翻只會看到英文，不會壞。
+  - ini 必須跟著 DLL 出貨（csproj 的 `<Content Include=... CopyToOutputDirectory>`）。`<None Update>` 在這個 SDK 下不會複製，別改回去。
+  - 鍵值是**執行期**的字串：原始碼裡的 `\"` 在鍵值裡是 `"`。產生 ini 時沒還原逸出會讓那些條目永遠查不到（踩過一次）。
+  - 例外：**遊戲自己的字串不要翻譯**。右鍵選單、數量視窗提示一律走 `GameStrings` 用資料表 row id 取當前語言，那比翻譯檔更好——不需要譯文，任何語言都成立。
+
 - **選單文字一律用遊戲資料表比對，不要寫死字串。** 上游原本寫死英文（`"Entrust to Retainer"`…），台服選單是繁中，一個都對不上。TC fork 的做法是 `GameStrings.MatchesClientLabel()`：用 Addon 資料表的 row id 取出**當前客戶端語言**的正式字串再比。這不是「翻成中文」，是語言中立——切成日文、英文一樣能用。
 - 資料表比對**失敗時會往下走上游那套英文啟發式**，所以國際服行為完全不變，上游合併也不會打架。
 - TC 專屬修改一律標 `// [TC]` 註解並寫清楚為什麼，方便 `sync-upstream` 衝突時判斷。
