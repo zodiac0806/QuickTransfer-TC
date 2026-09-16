@@ -124,19 +124,18 @@ public sealed unsafe partial class Plugin
     }
 
     /// <summary>
-    /// 在 FreeCompanyChest 這個 addon 裡，找出游標正壓著的儲物櫃格子，讀出它的 (容器, 格號)。
+    /// 找出游標壓著的是儲物櫃哪一格。
     ///
-    /// 做法是把游標壓到的所有候選節點都收集起來、由小到大排序，再逐一讀 payload，
-    /// 取第一個 payload 真的是 FreeCompanyPage 的。三個理由：
-    ///   - 格子可能是 DragDrop 也可能是 ListItemRenderer（不同 addon 佈局不一樣），兩種都要收。
-    ///   - 節點是巢狀的，外層容器也可能被游標壓到；取面積最小的才是真正的那一格。
-    ///   - payload 不是每個節點都是 (InventoryType, slot)，有些帶的是別的東西
-    ///     （實測撞到過 37/30，37 根本不是 InventoryType）。所以一定要驗證，不能拿了就用。
+    /// 不用節點 payload。實測三次分別讀到 37/30、37/5、0/34——Int1 一下 37 一下 0，
+    /// 代表那個 payload container 根本沒被填（只有真的開始拖曳時才會填），讀到的是殘值。
+    /// 上游的三條分頁解析也全部依賴 payload，所以在台服同樣全部失敗。
     ///
-    /// 為什麼不用 AgentFreeCompanyChest 的 ContextInventoryType／ContextInventorySlot：
-    /// API13 的 FFXIVClientStructs 沒有這個結構，要用就得自己寫死欄位位移。位移跟著客戶端版本走，
-    /// 台服跟其他服不見得一樣，讀錯了會搬到完全不相干的格子——這種錯誤比「沒反應」危險得多。
-    /// 節點 payload 沒有這個問題，是版本無關的。
+    /// 改用兩個不依賴 payload 的來源：
+    ///   格號 ← 把整個 addon 的格子節點收集起來，照螢幕位置由上而下、由左而右排序，
+    ///          游標壓著的那一格排第幾就是第幾格。儲物櫃沒有客戶端排序，顯示順序＝實體順序。
+    ///   分頁 ← 讀分頁鈕（AtkComponentRadioButton）哪一顆是 checked。
+    ///
+    /// 最後一定要驗證 (分頁, 格號) 真的有東西才算數。
     /// </summary>
     private bool TryResolveCompanyChestCellUnderCursor(out InventoryType invType, out int slot, out string diag)
     {
@@ -152,7 +151,6 @@ public sealed unsafe partial class Plugin
                 return false;
             }
 
-            // 用 Win32 取游標，不要在非繪製時機呼叫 ImGui。上游已經有這個 helper。
             if (!TryGetClientCursorPos(out var mouseX, out var mouseY))
             {
                 diag = "取不到游標座標";
@@ -161,81 +159,104 @@ public sealed unsafe partial class Plugin
 
             var scale = addon->Scale <= 0 ? 1f : addon->Scale;
 
-            var candidates = new List<(nint Ddi, float Area, int ListIndex)>();
-            var inspected = 0;
-            CollectCellsUnderCursor(&addon->UldManager, mouseX, mouseY, scale, 0, candidates, ref inspected);
+            var cells = new List<(float X, float Y, float W, float H)>();
+            var radioChecked = new List<bool>();
+            CollectChestNodes(&addon->UldManager, scale, 0, cells, radioChecked);
 
-            if (candidates.Count == 0)
+            if (cells.Count == 0)
             {
-                diag = $"游標({mouseX},{mouseY}) scale={scale:F2} 未命中任何格子節點，掃過 {inspected} 個";
+                diag = $"找不到任何格子節點（游標 {mouseX},{mouseY}）";
                 return false;
             }
 
-            // 由小到大：最內層、最小的那個才是真正的格子。
-            candidates.Sort(static (a, b) => a.Area.CompareTo(b.Area));
-
-            var seen = new List<string>();
-            var slotOnly = -1;
-            var listIndex = candidates.Count > 0 ? candidates[0].ListIndex : -1;
-
-            foreach (var (ddiPtr, _, _) in candidates)
+            // 游標壓著哪一格：有重疊時取面積最小的。
+            var hit = -1;
+            var hitArea = float.MaxValue;
+            for (var i = 0; i < cells.Count; i++)
             {
-                if (!TryGetSlotFromDragDropInterface((AtkDragDropInterface*)ddiPtr, out var t, out var sl) || sl < 0)
+                var c = cells[i];
+                if (mouseX < c.X || mouseX > c.X + c.W || mouseY < c.Y || mouseY > c.Y + c.H)
                     continue;
 
-                if (seen.Count < 6)
-                    seen.Add($"{(int)t}/{sl}");
-
-                // 少數節點的 payload 直接就是真的 InventoryType，那最省事。
-                if (IsCompanyChestType(t))
+                var area = c.W * c.H;
+                if (area < hitArea)
                 {
-                    invType = t;
-                    slot = sl;
-                    diag = $"{t}/{sl}（候選 {candidates.Count}，掃過 {inspected}）";
-                    return true;
+                    hitArea = area;
+                    hit = i;
                 }
-
-                // 儲物櫃格子的 payload Int1 是 container id（實測 37），不是 InventoryType，
-                // 但 Int2 確實是格號（實測點不同格會跟著變）。container id → InventoryType 的
-                // 對照表沒有可靠來源，所以不要猜：格號用這裡的，分頁另外問上游那套解析器。
-                if (slotOnly < 0)
-                    slotOnly = sl;
             }
 
-            if (slotOnly >= 0 && TryResolveCurrentCompanyChestPage(addon, out var page))
+            if (hit < 0)
             {
-                // 驗證：解出來的格子必須真的有東西。使用者是右鍵一個道具才觸發的，
-                // 空格代表分頁配錯了——寧可不做，也不要從錯的分頁開始整批搬。
-                if (TryGetItemInfo(page, slotOnly, out var vItemId, out _, out var vQty) && vItemId != 0 && vQty != 0)
-                {
-                    invType = page;
-                    slot = slotOnly;
-                    diag = $"{page}/{slotOnly}（格號取自節點，分頁取自 addon；候選 {candidates.Count}，掃過 {inspected}）";
-                    return true;
-                }
-
-                diag = $"分頁 {page} 的第 {slotOnly} 格是空的，判定分頁解析錯誤，不動作（payload=[{string.Join(" ", seen)}]）";
-                DumpCompanyChestState(addon, listIndex);
+                diag = $"游標({mouseX},{mouseY}) 不在任何格子上（共 {cells.Count} 格）";
                 return false;
             }
 
-            diag = $"游標({mouseX},{mouseY}) 命中 {candidates.Count}／掃過 {inspected}，解不出分頁，payload=[{string.Join(" ", seen)}] listIndex={listIndex}";
-            DumpCompanyChestState(addon, listIndex);
+            // 排名：由上而下、由左而右。同一列的 Y 會有些微差異，用格高的一半當容差分組。
+            var rowTolerance = Math.Max(1f, cells[hit].H * 0.5f);
+            var order = new List<int>(cells.Count);
+            for (var i = 0; i < cells.Count; i++)
+                order.Add(i);
+
+            order.Sort((a, b) =>
+            {
+                var ra = (int)Math.Round(cells[a].Y / rowTolerance);
+                var rb = (int)Math.Round(cells[b].Y / rowTolerance);
+                if (ra != rb)
+                    return ra.CompareTo(rb);
+                return cells[a].X.CompareTo(cells[b].X);
+            });
+
+            var rank = order.IndexOf(hit);
+            if (rank < 0)
+            {
+                diag = "格子排序失敗";
+                return false;
+            }
+
+            // 分頁：哪一顆分頁鈕是 checked。
+            var checkedIndex = radioChecked.IndexOf(true);
+            var pageCandidates = new List<InventoryType>();
+            foreach (var t in Enum.GetValues<InventoryType>())
+            {
+                if (IsCompanyChestType(t))
+                    pageCandidates.Add(t);
+            }
+
+            pageCandidates.Sort(static (a, b) => ((int)a).CompareTo((int)b));
+
+            if (checkedIndex >= 0 && checkedIndex < pageCandidates.Count)
+            {
+                var page = pageCandidates[checkedIndex];
+                if (TryGetItemInfo(page, rank, out var itemId, out _, out var qty) && itemId != 0 && qty != 0)
+                {
+                    invType = page;
+                    slot = rank;
+                    diag = $"{page}/{rank}＝{DescribeItem(itemId)}x{qty}（格子 {cells.Count}，分頁鈕 {radioChecked.Count} 第 {checkedIndex} 顆）";
+                    return true;
+                }
+
+                diag = $"分頁鈕指向 {(int)page}，但該頁第 {rank} 格是空的（格子 {cells.Count}，分頁鈕 {radioChecked.Count} 第 {checkedIndex} 顆）";
+                DumpCompanyChestState(addon, rank);
+                return false;
+            }
+
+            diag = $"讀不到目前分頁（格子 {cells.Count}，排名 {rank}，分頁鈕 {radioChecked.Count} 顆都沒 checked）";
+            DumpCompanyChestState(addon, rank);
             return false;
         }
         catch (Exception ex)
         {
             diag = $"例外 {ex.GetType().Name}";
-            Log.Warning(ex, "[QuickTransfer] 儲物櫃命中測試失敗。");
+            Log.Warning(ex, "[QuickTransfer] 儲物櫃格子解析失敗。");
             return false;
         }
     }
 
     /// <summary>
-    /// 解不出分頁時，把實際狀態倒到聊天視窗。猜了三輪都沒中，不要再猜——把遊戲現在到底
-    /// 是什麼狀態攤開來看。log 檔在這台機器上寫不進去，所以一律走 ChatGui。
+    /// 解析失敗時把實際狀態倒到聊天視窗。這台機器的 dalamud.log 寫不進去，所以走 ChatGui。
     /// </summary>
-    private void DumpCompanyChestState(AtkUnitBase* addon, int listIndex)
+    private void DumpCompanyChestState(AtkUnitBase* addon, int slotGuess)
     {
         try
         {
@@ -243,7 +264,6 @@ public sealed unsafe partial class Plugin
             if (inv == null)
                 return;
 
-            // 1) 各分頁目前的實際內容
             var pageInfo = new List<string>();
             foreach (var t in Enum.GetValues<InventoryType>())
             {
@@ -271,19 +291,7 @@ public sealed unsafe partial class Plugin
 
             ChatGui.Print($"[QT/dump] 分頁內容 {string.Join(" ", pageInfo)}");
 
-            // 2) 上游三條分頁解析各自的結果
-            var hovered = lastHoverCompanyChestPage;
-            var hoverStr = hovered == null
-                ? "無"
-                : $"{(int)hovered.Value.Page}(age={Environment.TickCount64 - hovered.Value.SeenAtMs}ms)";
-
-            var fromAddonStr = TryResolveCompanyChestPageFromAddon(addon, out var fa) ? ((int)fa).ToString() : "失敗";
-            var fromValuesStr = TryResolveCompanyChestSelectedPageFromAtkValues(addon->Id, out var fv) ? ((int)fv).ToString() : "失敗";
-
-            ChatGui.Print($"[QT/dump] 分頁解析 hover={hoverStr} addon={fromAddonStr} atkvalues={fromValuesStr} 設定頁數={Configuration.CompanyChestCompartments}");
-
-            // 3) 如果 listIndex 有值，看看它在哪一個分頁對得上「有東西」
-            if (listIndex >= 0)
+            if (slotGuess >= 0)
             {
                 var matches = new List<string>();
                 foreach (var t in Enum.GetValues<InventoryType>())
@@ -291,11 +299,11 @@ public sealed unsafe partial class Plugin
                     if (!IsCompanyChestType(t))
                         continue;
 
-                    if (TryGetItemInfo(t, listIndex, out var id, out _, out var q) && id != 0)
+                    if (TryGetItemInfo(t, slotGuess, out var id, out _, out var q) && id != 0)
                         matches.Add($"{(int)t}→{DescribeItem(id)}x{q}");
                 }
 
-                ChatGui.Print($"[QT/dump] listIndex={listIndex} 在各頁對應到：{(matches.Count > 0 ? string.Join(" ", matches) : "都是空的")}");
+                ChatGui.Print($"[QT/dump] 第 {slotGuess} 格在各頁對應到：{(matches.Count > 0 ? string.Join(" ", matches) : "都是空的")}");
             }
         }
         catch (Exception ex)
@@ -305,52 +313,15 @@ public sealed unsafe partial class Plugin
     }
 
     /// <summary>
-    /// 問出儲物櫃目前開在哪一個分頁。三條路都是上游既有的，他們已經為此踩過 off-by-one，
-    /// 不要自己另外發明一套。
+    /// 走一次 addon 的節點樹，把格子（DragDrop／ListItemRenderer）的螢幕矩形，
+    /// 以及分頁鈕的 checked 狀態，各收集成一份。
     /// </summary>
-    private bool TryResolveCurrentCompanyChestPage(AtkUnitBase* addon, out InventoryType page)
-    {
-        page = default;
-
-        // 1) 滑鼠最近停留過的分頁（上游在 hover 當下就解析好存起來的）。
-        var hovered = lastHoverCompanyChestPage;
-        if (hovered != null &&
-            Environment.TickCount64 - hovered.Value.SeenAtMs <= 20000 &&
-            IsCompanyChestType(hovered.Value.Page))
-        {
-            page = hovered.Value.Page;
-            return true;
-        }
-
-        // 2) 掃 addon 節點，取出現最多次的 FreeCompanyPageX。
-        if (TryResolveCompanyChestPageFromAddon(addon, out var fromAddon) && IsCompanyChestType(fromAddon))
-        {
-            page = fromAddon;
-            return true;
-        }
-
-        // 3) 從 addon 的 AtkValues 讀目前選的分頁。
-        if (TryResolveCompanyChestSelectedPageFromAtkValues(addon->Id, out var fromValues) && IsCompanyChestType(fromValues))
-        {
-            page = fromValues;
-            return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// 遞迴走 uld 樹，把游標壓著的候選格子全部收集起來（不要一命中就收工，外層容器也會被壓到）。
-    /// DragDrop 與 ListItemRenderer 兩種元件都收；碰到 List 就直接問它要 item renderer。
-    /// </summary>
-    private static void CollectCellsUnderCursor(
+    private static void CollectChestNodes(
         AtkUldManager* uld,
-        float mouseX,
-        float mouseY,
         float scale,
         int depth,
-        List<(nint Ddi, float Area, int ListIndex)> candidates,
-        ref int inspected)
+        List<(float X, float Y, float W, float H)> cells,
+        List<bool> radioChecked)
     {
         if (uld == null || depth > 10)
             return;
@@ -368,94 +339,55 @@ public sealed unsafe partial class Plugin
             var component = compNode->Component;
             var type = component->GetComponentType();
 
-            if (type is ComponentType.DragDrop or ComponentType.ListItemRenderer)
+            switch (type)
             {
-                inspected++;
-                var listIdx = type == ComponentType.ListItemRenderer
-                    ? ((AtkComponentListItemRenderer*)component)->ListItemIndex
-                    : -1;
-                TryAddCandidate(node, GetDdi(component, type), mouseX, mouseY, scale, listIdx, candidates);
-            }
-            else if (type == ComponentType.List)
-            {
-                // List 的 item renderer 不一定掛在 UldManager 的 NodeList 上，直接跟 List 要。
-                var list = (AtkComponentList*)component;
-                for (var r = 0; r < 512; r++)
+                case ComponentType.DragDrop:
+                case ComponentType.ListItemRenderer:
                 {
-                    AtkComponentListItemRenderer* renderer;
-                    try { renderer = list->GetItemRenderer(r); }
-                    catch { break; }
+                    var w = node->Width * scale;
+                    var h = node->Height * scale;
+                    if (w > 0 && h > 0)
+                        cells.Add((node->ScreenX, node->ScreenY, w, h));
+                    break;
+                }
 
-                    if (renderer == null)
-                        break;
+                case ComponentType.RadioButton:
+                {
+                    try { radioChecked.Add(((AtkComponentRadioButton*)component)->IsSelected); }
+                    catch { radioChecked.Add(false); }
+                    break;
+                }
 
-                    var ownerNode = renderer->OwnerNode;
-                    if (ownerNode == null)
-                        continue;
+                case ComponentType.List:
+                {
+                    var list = (AtkComponentList*)component;
+                    for (var r = 0; r < 512; r++)
+                    {
+                        AtkComponentListItemRenderer* renderer;
+                        try { renderer = list->GetItemRenderer(r); }
+                        catch { break; }
 
-                    var resNode = (AtkResNode*)ownerNode;
-                    if (!resNode->IsVisible())
-                        continue;
+                        if (renderer == null)
+                            break;
 
-                    inspected++;
-                    TryAddCandidate(resNode, GetRendererDdi(renderer), mouseX, mouseY, scale, renderer->ListItemIndex, candidates);
+                        var ownerNode = (AtkResNode*)renderer->OwnerNode;
+                        if (ownerNode == null || !ownerNode->IsVisible())
+                            continue;
+
+                        var w = ownerNode->Width * scale;
+                        var h = ownerNode->Height * scale;
+                        if (w > 0 && h > 0)
+                            cells.Add((ownerNode->ScreenX, ownerNode->ScreenY, w, h));
+                    }
+
+                    break;
                 }
             }
 
-            CollectCellsUnderCursor(&component->UldManager, mouseX, mouseY, scale, depth + 1, candidates, ref inspected);
+            CollectChestNodes(&component->UldManager, scale, depth + 1, cells, radioChecked);
         }
     }
 
-    /// <summary>list item renderer 身上有兩個 DDI：內嵌的 DragDrop 子元件優先，沒有才用自己那個。</summary>
-    private static AtkDragDropInterface* GetRendererDdi(AtkComponentListItemRenderer* renderer)
-    {
-        if (renderer == null)
-            return null;
-
-        if (renderer->DragDropComponent != null)
-            return &renderer->DragDropComponent->AtkDragDropInterface;
-
-        return &renderer->AtkDragDropInterface;
-    }
-
-    private static AtkDragDropInterface* GetDdi(AtkComponentBase* component, ComponentType type)
-    {
-        if (component == null)
-            return null;
-
-        return type switch
-        {
-            ComponentType.DragDrop => &((AtkComponentDragDrop*)component)->AtkDragDropInterface,
-            ComponentType.ListItemRenderer => GetRendererDdi((AtkComponentListItemRenderer*)component),
-            _ => null,
-        };
-    }
-
-    private static void TryAddCandidate(
-        AtkResNode* node,
-        AtkDragDropInterface* ddi,
-        float mouseX,
-        float mouseY,
-        float scale,
-        int listIndex,
-        List<(nint Ddi, float Area, int ListIndex)> candidates)
-    {
-        if (node == null || ddi == null)
-            return;
-
-        var x = node->ScreenX;
-        var y = node->ScreenY;
-        var w = node->Width * scale;
-        var h = node->Height * scale;
-
-        if (w <= 0 || h <= 0)
-            return;
-
-        if (mouseX < x || mouseX > x + w || mouseY < y || mouseY > y + h)
-            return;
-
-        candidates.Add(((nint)ddi, w * h, listIndex));
-    }
 
 
     private bool StartBulkTransfer(InventoryType sourceType, uint sourceSlot, long now)
@@ -489,7 +421,13 @@ public sealed unsafe partial class Plugin
         };
 
         var scope = count <= 0 ? "到最後一格" : $"{count} 格";
-        ChatGui.Print($"[QuickTransfer] 開始批次搬運：{DescribeContainer(sourceType)} 畫面順序第 {startIndex + 1} 格起，{scope}。再按一次 Ctrl＋Shift＋右鍵可中止。");
+
+        // 把起點那格的道具名印出來：抓錯格子的話使用者一眼就看得出來，可以馬上再按一次中止。
+        var startItem = TryGetItemInfo(sourceType, (int)sourceSlot, out var startItemId, out _, out var startQty) && startItemId != 0
+            ? $"（{DescribeItem(startItemId)}x{startQty}）"
+            : string.Empty;
+
+        ChatGui.Print($"[QuickTransfer] 開始批次搬運：{DescribeContainer(sourceType)} 畫面順序第 {startIndex + 1} 格{startItem}起，{scope}。再按一次 Ctrl＋Shift＋右鍵可中止。");
         return true;
     }
 
