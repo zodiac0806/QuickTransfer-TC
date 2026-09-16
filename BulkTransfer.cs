@@ -74,25 +74,34 @@ public sealed unsafe partial class Plugin
     private const int BulkSlotCap = 80;
 
     /// <summary>
-    /// 從滑鼠最後停留的格子解析出容器與格號。公會儲物櫃的右鍵選單不經過 OpenForItemSlot，
-    /// 只能靠這個。
+    /// 解析「使用者點的是公會儲物櫃哪一格」。儲物櫃的右鍵選單走 MenuType.Default，
+    /// 不經過 OpenForItemSlot，所以拿不到現成的 (容器, 格號)。
+    ///
+    /// 三條路，由可靠到不可靠：
+    ///   1. 用游標座標去命中儲物櫃格子的節點，直接讀該節點的 payload。
+    ///      不依賴任何事件、也不依賴寫死的結構位移，是唯一穩的做法。
+    ///   2. hover 事件當下存下來的格子。
+    ///   3. hover 事件當下存下來的 AtkDragDropInterface 指標（事後讀，可能已失效）。
     /// </summary>
     private bool TryResolveHoveredSlot(long now, out InventoryType invType, out int slot)
     {
         invType = default;
         slot = -1;
 
-        // 優先用 hover 當下就 decode 好的儲物櫃格子。AtkDragDropInterface 的 payload
-        // 事後再讀可能已經失效——上游解析分頁時同樣是趁新鮮先存起來，不是事後才讀。
+        // 1) 游標命中測試。
+        if (TryResolveCompanyChestCellUnderCursor(out invType, out slot))
+            return true;
+
+        // 2) hover 當下 decode 好的格子。
         var cell = lastHoverCompanyChestCell;
-        if (cell != null && now - cell.Value.SeenAtMs <= 5000)
+        if (cell != null && now - cell.Value.SeenAtMs <= 5000 && cell.Value.Slot >= 0)
         {
             invType = cell.Value.Type;
             slot = cell.Value.Slot;
-            if (slot >= 0)
-                return true;
+            return true;
         }
 
+        // 3) 事後讀 hover 指標。
         var hover = lastHoverDdi;
         if (hover == null || now - hover.Value.SeenAtMs > 3000)
             return false;
@@ -105,6 +114,104 @@ public sealed unsafe partial class Plugin
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 在 FreeCompanyChest 這個 addon 裡，找出游標正壓在哪一個 DragDrop 節點上，讀出它的 (容器, 格號)。
+    ///
+    /// 為什麼不用 AgentFreeCompanyChest 的 ContextInventoryType／ContextInventorySlot：
+    /// API13 的 FFXIVClientStructs 沒有這個結構，要用就得自己寫死欄位位移。位移是跟著客戶端版本走的，
+    /// 台服跟其他服不見得一樣，讀錯了會搬到完全不相干的格子——這種錯誤比「沒反應」危險得多。
+    /// 節點命中測試沒有這個問題：payload 是節點自己帶的，版本無關。
+    /// </summary>
+    private bool TryResolveCompanyChestCellUnderCursor(out InventoryType invType, out int slot)
+    {
+        invType = default;
+        slot = -1;
+
+        try
+        {
+            if (!TryGetVisibleAddon(FreeCompanyChestAddonName, out var addon, WideAddonSearchMaxIndex) || addon == null)
+                return false;
+
+            // 用 Win32 取游標，不要在非繪製時機呼叫 ImGui。上游已經有這個 helper。
+            if (!TryGetClientCursorPos(out var mouseX, out var mouseY))
+                return false;
+
+            var scale = addon->Scale <= 0 ? 1f : addon->Scale;
+
+            AtkDragDropInterface* hit = null;
+            var inspected = 0;
+            WalkForDragDropUnderCursor(&addon->UldManager, mouseX, mouseY, scale, 0, ref hit, ref inspected);
+
+            if (hit == null)
+            {
+                if (Configuration.DebugMode)
+                    Log.Information($"[QuickTransfer] 儲物櫃命中測試：游標 ({mouseX},{mouseY}) 沒壓到任何格子（掃過 {inspected} 個 DragDrop 節點）。");
+                return false;
+            }
+
+            if (!TryGetSlotFromDragDropInterface(hit, out invType, out slot) || slot < 0)
+                return false;
+
+            if (Configuration.DebugMode)
+                Log.Information($"[QuickTransfer] 儲物櫃命中測試：{invType}/{slot}（掃過 {inspected} 個 DragDrop 節點）。");
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[QuickTransfer] 儲物櫃命中測試失敗。");
+            return false;
+        }
+    }
+
+    /// <summary>遞迴走 uld 樹，找游標壓著的 DragDrop 元件。深度上限只是保險，正常兩三層就到底。</summary>
+    private static void WalkForDragDropUnderCursor(
+        AtkUldManager* uld,
+        float mouseX,
+        float mouseY,
+        float scale,
+        int depth,
+        ref AtkDragDropInterface* hit,
+        ref int inspected)
+    {
+        if (uld == null || depth > 8 || hit != null)
+            return;
+
+        for (var i = 0; i < uld->NodeListCount; i++)
+        {
+            if (hit != null)
+                return;
+
+            var node = uld->NodeList[i];
+            if (node == null || !node->IsVisible())
+                continue;
+
+            var compNode = node->GetAsAtkComponentNode();
+            if (compNode == null || compNode->Component == null)
+                continue;
+
+            if (compNode->Component->GetComponentType() == ComponentType.DragDrop)
+            {
+                inspected++;
+
+                var x = node->ScreenX;
+                var y = node->ScreenY;
+                var w = node->Width * scale;
+                var h = node->Height * scale;
+
+                if (w > 0 && h > 0 &&
+                    mouseX >= x && mouseX <= x + w &&
+                    mouseY >= y && mouseY <= y + h)
+                {
+                    hit = &((AtkComponentDragDrop*)compNode->Component)->AtkDragDropInterface;
+                    return;
+                }
+            }
+
+            WalkForDragDropUnderCursor(&compNode->Component->UldManager, mouseX, mouseY, scale, depth + 1, ref hit, ref inspected);
         }
     }
 
