@@ -41,6 +41,7 @@ public sealed unsafe partial class Plugin
         public int Remaining;
 
         public int Moved;
+        public int Skipped;
 
         public long NextAttemptAtMs;
         public long ExpiresAtMs;
@@ -932,6 +933,15 @@ public sealed unsafe partial class Plugin
                 continue;
             }
 
+            // 清單過濾。被跳過的格子不算進「搬幾格」的配額——配額是「搬了幾格」，
+            // 不是「看過幾格」，不然設 10 格可能一個都沒搬到。
+            if (!ShouldMoveItem(itemId))
+            {
+                bulk.Skipped++;
+                AdvanceBulkSlot();
+                continue;
+            }
+
             var maxStack = GetItemStackSize(itemId);
             if (!TryFindBulkDestSlot(bulk.DestTypes, itemId, isHq, maxStack, out var dstType, out var dstSlot))
             {
@@ -1082,13 +1092,41 @@ public sealed unsafe partial class Plugin
             return;
 
         var moved = bulk.Moved;
+        var skipped = bulk.Skipped;
         bulk = default;
 
-        ChatGui.Print($"[QuickTransfer] 批次搬運結束：{why} 共搬了 {moved} 格。");
+        var tail = skipped > 0 ? $"，依清單跳過 {skipped} 格" : string.Empty;
+        ChatGui.Print($"[QuickTransfer] 批次搬運結束：{why} 共搬了 {moved} 格{tail}。");
+    }
+
+    /// <summary>
+    /// HQ 的道具在某些欄位會帶 +1000000 的偏移。清單比對一律用 base id，
+    /// 這樣使用者只要填一個 id 就同時涵蓋 HQ 與 NQ。
+    /// </summary>
+    public static uint NormalizeItemId(uint itemId)
+        => itemId >= 1_000_000 ? itemId - 1_000_000 : itemId;
+
+    /// <summary>
+    /// 這個道具要不要搬。指定清單非空時只看指定清單，排除清單不生效——
+    /// 兩個清單同時生效只會讓人搞不清楚為什麼某個東西沒被搬。
+    /// </summary>
+    private bool ShouldMoveItem(uint itemId)
+    {
+        var baseId = NormalizeItemId(itemId);
+
+        var include = Configuration.BulkIncludeItemIds;
+        if (include is { Count: > 0 })
+            return include.Contains(baseId);
+
+        var exclude = Configuration.BulkExcludeItemIds;
+        if (exclude is { Count: > 0 })
+            return !exclude.Contains(baseId);
+
+        return true;
     }
 
     /// <summary>取道具名稱，純粹是為了讓中止訊息看得懂是卡在哪一個東西上。</summary>
-    private static string DescribeItem(uint itemId)
+    public static string DescribeItem(uint itemId)
     {
         if (itemId == 0)
             return "未知道具";
@@ -1096,7 +1134,7 @@ public sealed unsafe partial class Plugin
         try
         {
             var sheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
-            if (sheet != null && sheet.TryGetRow(itemId, out var row))
+            if (sheet != null && sheet.TryGetRow(NormalizeItemId(itemId), out var row))
             {
                 var name = row.Name.ExtractText();
                 if (!string.IsNullOrWhiteSpace(name))

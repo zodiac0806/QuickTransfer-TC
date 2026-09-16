@@ -55,6 +55,12 @@ public sealed class Configuration : IPluginConfiguration
     // 每次搬運之間的間隔。太短會被伺服器當成連點擋下來。
     public int BulkTransferDelayMs { get; set; } = 250;
 
+    // 排除清單：這些道具不搬（其他全搬）。
+    public List<uint> BulkExcludeItemIds { get; set; } = [];
+
+    // 指定清單：只搬這些道具。非空時排除清單不生效。
+    public List<uint> BulkIncludeItemIds { get; set; } = [];
+
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }
 

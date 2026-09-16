@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
+using System.Text;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 
@@ -9,13 +12,65 @@ public class QuickTransferWindow : Window, IDisposable
 {
     private readonly Configuration _config;
 
+    // 清單在 UI 上是純文字，存檔才轉成 id 陣列。使用者打字打到一半不會是合法的 id，
+    // 所以不能每按一個鍵就往回寫設定。
+    private string _excludeText;
+    private string _includeText;
+
     public QuickTransferWindow(Configuration config)
         : base("QuickTransfer 設定###QuickTransferConfig")
     {
         _config = config;
+        _excludeText = FormatIds(config.BulkExcludeItemIds);
+        _includeText = FormatIds(config.BulkIncludeItemIds);
 
         SizeCondition = ImGuiCond.FirstUseEver;
-        Size = new Vector2(560, 440);
+        Size = new Vector2(620, 560);
+    }
+
+    private static string FormatIds(List<uint> ids)
+        => ids == null || ids.Count == 0 ? string.Empty : string.Join(", ", ids);
+
+    /// <summary>
+    /// 從自由文字抓出所有數字。這樣貼上「41757,41770, -- 信仰」這種從腳本複製來的
+    /// 內容也能用，中文註解會被忽略。
+    /// </summary>
+    private static List<uint> ParseIds(string text)
+    {
+        var result = new List<uint>();
+        if (string.IsNullOrWhiteSpace(text))
+            return result;
+
+        var current = new StringBuilder();
+        foreach (var ch in text + " ")
+        {
+            if (char.IsDigit(ch))
+            {
+                current.Append(ch);
+                continue;
+            }
+
+            if (current.Length > 0)
+            {
+                if (uint.TryParse(current.ToString(), out var id) && id > 0 && !result.Contains(id))
+                    result.Add(id);
+
+                current.Clear();
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>把清單裡前幾個 id 翻成名字，讓使用者確認自己填對了。</summary>
+    private static string PreviewIds(List<uint> ids)
+    {
+        if (ids.Count == 0)
+            return "（空）";
+
+        var names = ids.Take(4).Select(Plugin.DescribeItem);
+        var more = ids.Count > 4 ? $" …共 {ids.Count} 項" : string.Empty;
+        return string.Join("、", names) + more;
     }
 
     public void Dispose()
@@ -136,6 +191,27 @@ public class QuickTransferWindow : Window, IDisposable
             ImGui.SameLine();
             ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（0 = 一路搬到最後一格）");
 
+            ImGui.Spacing();
+            ImGui.Text("排除清單（這些不搬，其他全搬）：");
+            if (ImGui.InputTextMultiline("###BulkExclude", ref _excludeText, 4096, new Vector2(-1, 60)))
+            {
+                _config.BulkExcludeItemIds = ParseIds(_excludeText);
+                _config.Save();
+            }
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.9f), PreviewIds(_config.BulkExcludeItemIds));
+
+            ImGui.Spacing();
+            ImGui.Text("指定清單（只搬這些；填了這裡排除清單就不生效）：");
+            if (ImGui.InputTextMultiline("###BulkInclude", ref _includeText, 4096, new Vector2(-1, 60)))
+            {
+                _config.BulkIncludeItemIds = ParseIds(_includeText);
+                _config.Save();
+            }
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.9f), PreviewIds(_config.BulkIncludeItemIds));
+
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（填道具 ID，用逗號或換行分隔。中文註解會被忽略，可以直接貼腳本內容。HQ／NQ 視為同一項。）");
+
+            ImGui.Spacing();
             ImGui.Text("每格間隔（毫秒）：");
             ImGui.SameLine();
             ImGui.SetNextItemWidth(100);
@@ -192,6 +268,7 @@ public class QuickTransferWindow : Window, IDisposable
             ImGui.BulletText("選單項目是用遊戲資料表比對的，切換客戶端語言一樣能用。");
             ImGui.BulletText("批次搬運走的也是拖放那支函式，遊戲自己的檢查都還在；遇到搬不動的道具會直接中止並告訴你是哪一個。");
             ImGui.BulletText("批次搬運途中把僱員或儲物櫃視窗關掉，會立刻停手。");
+            ImGui.BulletText("清單跳過的格子不算進「搬幾格」的配額——配額算的是實際搬走幾格。");
             ImGui.Spacing();
 
             // 儲存
