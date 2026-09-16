@@ -78,7 +78,8 @@ dump 方式：用 Lumina 開 `<GamePath>\game\sqpack`，`LuminaOptions.DefaultEx
 - **搬運用 `TryCompanyChestMoveItem`（＝`RaptureAtkModule::HandleItemMove`）**，跟拖放同一支。遊戲自己的檢查（綁定、裝備中、掛市場中…）全都還在。
 - **一次只送一筆，然後等來源格真的變動**才繼續（`HasSlotChanged`）。不要用固定 delay 硬送，會被伺服器擋掉而且無法察覺。
 - **「格」才是配額單位**：併堆只搬走一部分時同一格會再跑一次，此時不扣 `Remaining`。
-- 同一格重試 `BulkMaxStuckRetries` 次還是不動 → 判定這格搬不動（綁定等），跳過並計入 `Failed`。
+- 同一格送 `BulkMaxStuckRetries` 次還是不動 → 判定這個道具搬不動（綁定、裝備中、掛市場…），**直接中止並在聊天視窗點名是哪個道具**。不要改回「跳過繼續跑」：使用者要的是停下來，而且跳過很可能一路撞上一整排都搬不動的東西。
+- 數量視窗開著時整個狀態機會讓路，但有 `BulkInputNumericStallMs` 看門狗：超時沒被處理就中止，視窗留給使用者。少了這個，自動確認一旦失效（例如提示字串沒認出來）整批就會每個 frame 都 return，表現出來就是卡死。
 - 儲物櫃**只掃右鍵的那一頁**：其他分頁沒開過就沒載入，硬掃會讀到空資料。僱員與背包則用 `IsContainerLoaded` 過濾後全掃。
 - 搬運中途僱員／儲物櫃視窗關掉 → 立刻停手。
 

@@ -190,7 +190,7 @@ public class QuickTransferWindow : Window, IDisposable
             ImGui.BulletText("Shift 只按一下就放開也沒關係，按鍵狀態是在選單開啟的瞬間就記下來的。");
             ImGui.BulletText("公會儲物櫃的存入走的是跟拖放同一個遊戲內部函式。");
             ImGui.BulletText("選單項目是用遊戲資料表比對的，切換客戶端語言一樣能用。");
-            ImGui.BulletText("批次搬運走的也是拖放那支函式，遊戲自己的檢查都還在；搬不動的格子會跳過並回報。");
+            ImGui.BulletText("批次搬運走的也是拖放那支函式，遊戲自己的檢查都還在；遇到搬不動的道具會直接中止並告訴你是哪一個。");
             ImGui.BulletText("批次搬運途中把僱員或儲物櫃視窗關掉，會立刻停手。");
             ImGui.Spacing();
 

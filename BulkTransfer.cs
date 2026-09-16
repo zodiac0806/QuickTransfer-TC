@@ -41,7 +41,6 @@ public sealed unsafe partial class Plugin
         public int Remaining;
 
         public int Moved;
-        public int Failed;
 
         public long NextAttemptAtMs;
         public long ExpiresAtMs;
@@ -53,6 +52,9 @@ public sealed unsafe partial class Plugin
         public InventoryType PendingType;
         public uint PendingSlot;
         public int StuckCount;
+
+        /// <summary>數量視窗是什麼時候開始擋路的；0 = 現在沒擋。</summary>
+        public long InputNumericSeenAtMs;
     }
 
     private BulkTransferState bulk;
@@ -60,8 +62,14 @@ public sealed unsafe partial class Plugin
     /// <summary>一次 tick 最多跳過幾個空格，免得整個背包都空的時候一格一格慢慢爬。</summary>
     private const int BulkEmptySlotScanPerTick = 40;
 
-    /// <summary>同一格重試幾次還是沒動就放棄，避免無限卡。</summary>
-    private const int BulkMaxStuckRetries = 6;
+    /// <summary>同一格送了幾次還是沒動，就判定這個道具搬不動。</summary>
+    private const int BulkMaxStuckRetries = 3;
+
+    /// <summary>
+    /// 數量視窗開著超過這個時間還沒被處理掉，就判定卡住了。
+    /// 會發生在自動確認被關掉、或這個視窗不是我們預期的那一種（於是沒人去按確定）。
+    /// </summary>
+    private const int BulkInputNumericStallMs = 3000;
 
     private const int BulkSlotCap = 80;
 
@@ -114,7 +122,6 @@ public sealed unsafe partial class Plugin
             DestTypes = destTypes,
             Remaining = count <= 0 ? int.MaxValue : count,
             Moved = 0,
-            Failed = 0,
             NextAttemptAtMs = now,
             // 整包背包最壞情況也就一兩分鐘；給寬一點但不要無上限。
             ExpiresAtMs = now + 180000,
@@ -340,8 +347,19 @@ public sealed unsafe partial class Plugin
         }
 
         // 數量視窗開著的時候什麼都別做，交給既有的自動確認流程。
+        // 但不能無條件等下去：自動確認若被關掉、或這個視窗不是我們預期的那一種，
+        // 就沒有人會去按確定，這裡會每個 frame 都 return，整個批次看起來就是卡死。
         if (TryGetVisibleAddon(InputNumericAddonName, out _))
+        {
+            if (bulk.InputNumericSeenAtMs == 0)
+                bulk.InputNumericSeenAtMs = now;
+            else if (now - bulk.InputNumericSeenAtMs > BulkInputNumericStallMs)
+                StopBulkTransfer("數量視窗沒有被處理（自動確認沒作用？），中止。視窗留給你自己決定。");
+
             return;
+        }
+
+        bulk.InputNumericSeenAtMs = 0;
 
         // 儲物櫃被別人佔用時的退避，沿用既有的 busy 判斷。
         if (now < companyChestBusyUntilMs)
@@ -374,12 +392,11 @@ public sealed unsafe partial class Plugin
             bulk.StuckCount++;
             if (bulk.StuckCount >= BulkMaxStuckRetries)
             {
-                // 這一格搬不動（綁定道具、市場委託中、目標拒收…），跳過去繼續下一格。
-                bulk.Failed++;
-                bulk.WaitingForMove = false;
-                bulk.StuckCount = 0;
-                AdvanceBulkSlot();
-                bulk.NextAttemptAtMs = now + Math.Max(50, Configuration.BulkTransferDelayMs);
+                // 這一格搬不動（綁定道具、裝備中、掛在市場、目標拒收…）。
+                // 依使用者要求：直接中止，不要跳過繼續跑——跳過會讓人搞不清楚到底停在哪、
+                // 也可能一路撞上一整排都搬不動的東西。
+                var stuckName = DescribeItem(bulk.PendingItemId);
+                StopBulkTransfer($"「{stuckName}」搬不動，中止。");
                 return;
             }
 
@@ -436,9 +453,7 @@ public sealed unsafe partial class Plugin
 
             if (!TryCompanyChestMoveItem(srcType, srcSlot, dstType, dstSlot, keepAliveForInputNumeric: true))
             {
-                bulk.Failed++;
-                AdvanceBulkSlot();
-                bulk.NextAttemptAtMs = now + Math.Max(50, Configuration.BulkTransferDelayMs);
+                StopBulkTransfer($"送出搬運失敗（「{DescribeItem(itemId)}」），中止。");
                 return;
             }
 
@@ -560,11 +575,33 @@ public sealed unsafe partial class Plugin
             return;
 
         var moved = bulk.Moved;
-        var failed = bulk.Failed;
         bulk = default;
 
-        var tail = failed > 0 ? $"，{failed} 格搬不動（已跳過）" : string.Empty;
-        ChatGui.Print($"[QuickTransfer] 批次搬運結束：{why} 共搬了 {moved} 格{tail}。");
+        ChatGui.Print($"[QuickTransfer] 批次搬運結束：{why} 共搬了 {moved} 格。");
+    }
+
+    /// <summary>取道具名稱，純粹是為了讓中止訊息看得懂是卡在哪一個東西上。</summary>
+    private static string DescribeItem(uint itemId)
+    {
+        if (itemId == 0)
+            return "未知道具";
+
+        try
+        {
+            var sheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+            if (sheet != null && sheet.TryGetRow(itemId, out var row))
+            {
+                var name = row.Name.ExtractText();
+                if (!string.IsNullOrWhiteSpace(name))
+                    return name;
+            }
+        }
+        catch
+        {
+            // 名字拿不到不是什麼大事，照樣回報。
+        }
+
+        return $"道具#{itemId}";
     }
 
     private static string DescribeContainer(InventoryType type)
