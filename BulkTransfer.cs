@@ -66,6 +66,16 @@ public sealed unsafe partial class Plugin
     private const int BulkMaxStuckRetries = 3;
 
     /// <summary>
+    /// 公會儲物櫃的重試次數要放寬很多。它有伺服器端節流，連續送出**正常就會**被擋掉，
+    /// 那不是「這個道具搬不動」。用背包那種 3 次就中止的標準會把正常節流誤判成失敗。
+    /// （對照 SND 腳本的做法：5 次、每次最多等 10 秒、被擋再額外等 1.5 秒。）
+    /// </summary>
+    private const int BulkMaxStuckRetriesCompanyChest = 8;
+
+    /// <summary>被擋之後的退避間隔，明顯拉長，不要繼續用一般的每格間隔去頂。</summary>
+    private const int BulkThrottleBackoffMs = 1500;
+
+    /// <summary>
     /// 數量視窗開著超過這個時間還沒被處理掉，就判定卡住了。
     /// 會發生在自動確認被關掉、或這個視窗不是我們預期的那一種（於是沒人去按確定）。
     /// </summary>
@@ -835,18 +845,32 @@ public sealed unsafe partial class Plugin
                 return;
 
             bulk.StuckCount++;
-            if (bulk.StuckCount >= BulkMaxStuckRetries)
+
+            // 公會儲物櫃：被擋是常態，退避拉長、次數放寬。
+            var involvesChest = IsCompanyChestType(bulk.PendingType) ||
+                                (bulk.DestTypes.Length > 0 && IsCompanyChestType(bulk.DestTypes[0]));
+            var maxRetries = involvesChest ? BulkMaxStuckRetriesCompanyChest : BulkMaxStuckRetries;
+            var retryDelay = involvesChest
+                ? BulkThrottleBackoffMs
+                : Math.Max(50, Configuration.BulkTransferDelayMs);
+
+            if (bulk.StuckCount >= maxRetries)
             {
                 // 這一格搬不動（綁定道具、裝備中、掛在市場、目標拒收…）。
                 // 依使用者要求：直接中止，不要跳過繼續跑——跳過會讓人搞不清楚到底停在哪、
                 // 也可能一路撞上一整排都搬不動的東西。
                 var stuckName = DescribeItem(bulk.PendingItemId);
-                StopBulkTransfer($"「{stuckName}」搬不動，中止。");
+                StopBulkTransfer($"「{stuckName}」試了 {maxRetries} 次都搬不動，中止。");
                 return;
             }
 
+            // 還沒放棄：重送同一格。公會儲物櫃這裡會等比較久。
             bulk.WaitingForMove = false;
-            bulk.NextAttemptAtMs = now + Math.Max(50, Configuration.BulkTransferDelayMs);
+            bulk.NextAttemptAtMs = now + retryDelay;
+
+            if (involvesChest && bulk.StuckCount == 1)
+                ChatGui.Print($"[QuickTransfer] 儲物櫃回應慢（伺服器節流），放慢重試中……");
+
             return;
         }
 
@@ -907,7 +931,12 @@ public sealed unsafe partial class Plugin
             bulk.PendingSlot = srcSlot;
             bulk.PendingItemId = itemId;
             bulk.PendingQty = qty;
-            bulk.NextAttemptAtMs = now + Math.Max(50, Configuration.BulkTransferDelayMs);
+
+            // 送出後要等多久才判定「沒反應」。儲物櫃走伺服器往返，250ms 太短會誤判。
+            var involvesChestNow = IsCompanyChestType(srcType) || IsCompanyChestType(dstType);
+            bulk.NextAttemptAtMs = now + (involvesChestNow
+                ? Math.Max(1000, Configuration.BulkTransferDelayMs)
+                : Math.Max(50, Configuration.BulkTransferDelayMs));
 
             if (Configuration.DebugMode)
                 Log.Information($"[QuickTransfer] 批次搬運：#{bulk.OrderIndex + 1} {srcType}/{srcSlot} (item={itemId} qty={qty}) -> {dstType}/{dstSlot}");
