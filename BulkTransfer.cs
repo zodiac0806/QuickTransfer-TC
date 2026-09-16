@@ -175,6 +175,8 @@ public sealed unsafe partial class Plugin
             candidates.Sort(static (a, b) => a.Area.CompareTo(b.Area));
 
             var seen = new List<string>();
+            var slotOnly = -1;
+
             foreach (var (ddiPtr, _) in candidates)
             {
                 if (!TryGetSlotFromDragDropInterface((AtkDragDropInterface*)ddiPtr, out var t, out var sl) || sl < 0)
@@ -183,16 +185,39 @@ public sealed unsafe partial class Plugin
                 if (seen.Count < 6)
                     seen.Add($"{(int)t}/{sl}");
 
-                if (!IsCompanyChestType(t))
-                    continue;
+                // 少數節點的 payload 直接就是真的 InventoryType，那最省事。
+                if (IsCompanyChestType(t))
+                {
+                    invType = t;
+                    slot = sl;
+                    diag = $"{t}/{sl}（候選 {candidates.Count}，掃過 {inspected}）";
+                    return true;
+                }
 
-                invType = t;
-                slot = sl;
-                diag = $"{t}/{sl}（候選 {candidates.Count}，掃過 {inspected}）";
-                return true;
+                // 儲物櫃格子的 payload Int1 是 container id（實測 37），不是 InventoryType，
+                // 但 Int2 確實是格號（實測點不同格會跟著變）。container id → InventoryType 的
+                // 對照表沒有可靠來源，所以不要猜：格號用這裡的，分頁另外問上游那套解析器。
+                if (slotOnly < 0)
+                    slotOnly = sl;
             }
 
-            diag = $"游標({mouseX},{mouseY}) 命中 {candidates.Count} 個節點但沒有一個是儲物櫃格子，掃過 {inspected} 個，payload=[{string.Join(" ", seen)}]";
+            if (slotOnly >= 0 && TryResolveCurrentCompanyChestPage(addon, out var page))
+            {
+                // 驗證：解出來的格子必須真的有東西。使用者是右鍵一個道具才觸發的，
+                // 空格代表分頁配錯了——寧可不做，也不要從錯的分頁開始整批搬。
+                if (TryGetItemInfo(page, slotOnly, out var vItemId, out _, out var vQty) && vItemId != 0 && vQty != 0)
+                {
+                    invType = page;
+                    slot = slotOnly;
+                    diag = $"{page}/{slotOnly}（格號取自節點，分頁取自 addon；候選 {candidates.Count}，掃過 {inspected}）";
+                    return true;
+                }
+
+                diag = $"分頁 {page} 的第 {slotOnly} 格是空的，判定分頁解析錯誤，不動作（payload=[{string.Join(" ", seen)}]）";
+                return false;
+            }
+
+            diag = $"游標({mouseX},{mouseY}) 命中 {candidates.Count} 個節點，掃過 {inspected} 個，但解不出分頁，payload=[{string.Join(" ", seen)}]";
             return false;
         }
         catch (Exception ex)
@@ -201,6 +226,41 @@ public sealed unsafe partial class Plugin
             Log.Warning(ex, "[QuickTransfer] 儲物櫃命中測試失敗。");
             return false;
         }
+    }
+
+    /// <summary>
+    /// 問出儲物櫃目前開在哪一個分頁。三條路都是上游既有的，他們已經為此踩過 off-by-one，
+    /// 不要自己另外發明一套。
+    /// </summary>
+    private bool TryResolveCurrentCompanyChestPage(AtkUnitBase* addon, out InventoryType page)
+    {
+        page = default;
+
+        // 1) 滑鼠最近停留過的分頁（上游在 hover 當下就解析好存起來的）。
+        var hovered = lastHoverCompanyChestPage;
+        if (hovered != null &&
+            Environment.TickCount64 - hovered.Value.SeenAtMs <= 20000 &&
+            IsCompanyChestType(hovered.Value.Page))
+        {
+            page = hovered.Value.Page;
+            return true;
+        }
+
+        // 2) 掃 addon 節點，取出現最多次的 FreeCompanyPageX。
+        if (TryResolveCompanyChestPageFromAddon(addon, out var fromAddon) && IsCompanyChestType(fromAddon))
+        {
+            page = fromAddon;
+            return true;
+        }
+
+        // 3) 從 addon 的 AtkValues 讀目前選的分頁。
+        if (TryResolveCompanyChestSelectedPageFromAtkValues(addon->Id, out var fromValues) && IsCompanyChestType(fromValues))
+        {
+            page = fromValues;
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
