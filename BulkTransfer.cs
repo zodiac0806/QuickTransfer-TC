@@ -1,6 +1,7 @@
 using System;
-using Dalamud.Game.Text.SeStringHandling;
+using System.Collections.Generic;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace QuickTransfer;
@@ -13,7 +14,13 @@ namespace QuickTransfer;
 ///   僱員的格子    → 搬回背包
 ///   儲物櫃的格子  → 搬回背包
 ///
-/// 搬幾格由設定的「批次搬運格數」決定，0 = 一路搬到該容器最後一格。
+/// 搬幾格由設定的「批次搬運格數」決定，0 = 一路搬到最後一格。
+///
+/// ⚠ 順序一定要用**畫面顯示順序**，不能用 InventoryType/Slot 的實體編號。
+///    背包的實體格號是伺服器給的，跟你在背包視窗看到的排列無關（沒整理過的背包差很多），
+///    拿實體編號來掃就會變成「跳著搬」。顯示順序在 ItemOrderModule 的 sorter 裡，
+///    「自動整理」改寫的就是它。細節見 <see cref="TryBuildDisplayOrder"/>。
+///
 /// 搬運本身走跟拖放同一支遊戲函式（RaptureAtkModule::HandleItemMove），
 /// 所以遊戲自己的合法性檢查（綁定、裝備中、市場委託中…）全都還在，插件不會繞過去。
 /// </summary>
@@ -23,10 +30,9 @@ public sealed unsafe partial class Plugin
     {
         public bool Active;
 
-        /// <summary>來源容器清單，依序掃。</summary>
-        public InventoryType[] SourceTypes;
-        public int SourceTypeIndex;
-        public int SourceSlot;
+        /// <summary>要掃的格子，已經照畫面顯示順序排好。</summary>
+        public (InventoryType Type, uint Slot)[] Order;
+        public int OrderIndex;
 
         /// <summary>目標容器清單，找位置時依序試。</summary>
         public InventoryType[] DestTypes;
@@ -92,24 +98,19 @@ public sealed unsafe partial class Plugin
             return true;
         }
 
-        if (!TryBuildBulkPlan(sourceType, out var sourceTypes, out var destTypes, out var reason))
+        if (!TryBuildBulkPlan(sourceType, sourceSlot, out var order, out var startIndex, out var destTypes, out var reason))
         {
             if (Configuration.DebugMode)
                 Log.Information($"[QuickTransfer] 批次搬運未啟動：{reason} (src={sourceType} slot={sourceSlot})");
             return false;
         }
 
-        var startTypeIndex = Array.IndexOf(sourceTypes, sourceType);
-        if (startTypeIndex < 0)
-            return false;
-
         var count = Configuration.BulkTransferCount;
         bulk = new BulkTransferState
         {
             Active = true,
-            SourceTypes = sourceTypes,
-            SourceTypeIndex = startTypeIndex,
-            SourceSlot = (int)sourceSlot,
+            Order = order,
+            OrderIndex = startIndex,
             DestTypes = destTypes,
             Remaining = count <= 0 ? int.MaxValue : count,
             Moved = 0,
@@ -120,18 +121,21 @@ public sealed unsafe partial class Plugin
         };
 
         var scope = count <= 0 ? "到最後一格" : $"{count} 格";
-        ChatGui.Print($"[QuickTransfer] 開始批次搬運：{DescribeContainer(sourceType)} 第 {sourceSlot + 1} 格起，{scope}。再按一次 Ctrl＋Shift＋右鍵可中止。");
+        ChatGui.Print($"[QuickTransfer] 開始批次搬運：{DescribeContainer(sourceType)} 畫面順序第 {startIndex + 1} 格起，{scope}。再按一次 Ctrl＋Shift＋右鍵可中止。");
         return true;
     }
 
-    /// <summary>決定來源要掃哪些容器、目標可以放哪些容器。</summary>
+    /// <summary>決定來源要掃哪些格子（含順序與起點）、目標可以放哪些容器。</summary>
     private bool TryBuildBulkPlan(
         InventoryType sourceType,
-        out InventoryType[] sourceTypes,
+        uint sourceSlot,
+        out (InventoryType Type, uint Slot)[] order,
+        out int startIndex,
         out InventoryType[] destTypes,
         out string reason)
     {
-        sourceTypes = [];
+        order = [];
+        startIndex = -1;
         destTypes = [];
         reason = string.Empty;
 
@@ -142,10 +146,12 @@ public sealed unsafe partial class Plugin
             return false;
         }
 
+        InventoryType[] sourceTypes;
+
         if (IsPlayerInventoryType(sourceType))
         {
             // 背包 → 僱員／儲物櫃。兩個都開著的話以僱員優先（僱員視窗是模態的，比較不會誤判）。
-            sourceTypes = PlayerInventoryTypes;
+            sourceTypes = FilterLoaded(inv, PlayerInventoryTypes);
 
             if (IsRetainerOpen())
             {
@@ -155,11 +161,8 @@ public sealed unsafe partial class Plugin
                     reason = "僱員背包尚未載入";
                     return false;
                 }
-
-                return true;
             }
-
-            if (IsCompanyChestOpen() && Configuration.EnableCompanyChest)
+            else if (IsCompanyChestOpen() && Configuration.EnableCompanyChest)
             {
                 destTypes = FilterLoaded(inv, GetCompanyChestInventoryTypes());
                 if (destTypes.Length == 0)
@@ -167,48 +170,148 @@ public sealed unsafe partial class Plugin
                     reason = "儲物櫃分頁尚未載入";
                     return false;
                 }
-
-                return true;
             }
-
-            reason = "沒有開著僱員或公會儲物櫃";
-            return false;
+            else
+            {
+                reason = "沒有開著僱員或公會儲物櫃";
+                return false;
+            }
         }
-
-        if (IsRetainerType(sourceType))
+        else if (IsRetainerType(sourceType))
         {
             sourceTypes = FilterLoaded(inv, RetainerInventoryTypes);
             destTypes = FilterLoaded(inv, PlayerInventoryTypes);
-            if (sourceTypes.Length == 0 || destTypes.Length == 0)
-            {
-                reason = "容器尚未載入";
-                return false;
-            }
-
-            return true;
         }
-
-        if (IsCompanyChestType(sourceType))
+        else if (IsCompanyChestType(sourceType))
         {
-            // 儲物櫃只掃右鍵的那一頁。其他分頁沒開過就沒載入，硬掃會讀到空資料。
+            // 儲物櫃只掃右鍵的那一頁：其他分頁沒開過就沒載入，硬掃會讀到空資料。
+            // 儲物櫃也沒有客戶端排序，顯示順序就是實體順序。
             sourceTypes = [sourceType];
             destTypes = FilterLoaded(inv, PlayerInventoryTypes);
-            if (destTypes.Length == 0)
-            {
-                reason = "背包尚未載入";
-                return false;
-            }
-
-            return true;
+        }
+        else
+        {
+            reason = $"不支援的來源容器 {sourceType}";
+            return false;
         }
 
-        reason = $"不支援的來源容器 {sourceType}";
-        return false;
+        if (sourceTypes.Length == 0 || destTypes.Length == 0)
+        {
+            reason = "容器尚未載入";
+            return false;
+        }
+
+        var usedSorter = false;
+        order = TryBuildDisplayOrder(sourceTypes, out usedSorter) ?? BuildRawOrder(inv, sourceTypes);
+        startIndex = Array.IndexOf(order, (sourceType, sourceSlot));
+
+        if (startIndex < 0)
+        {
+            // 顯示順序裡找不到這一格（sorter 落後了之類），退回實體順序再找一次。
+            order = BuildRawOrder(inv, sourceTypes);
+            startIndex = Array.IndexOf(order, (sourceType, sourceSlot));
+            usedSorter = false;
+        }
+
+        if (startIndex < 0)
+        {
+            reason = "在來源容器裡找不到起點格";
+            return false;
+        }
+
+        if (Configuration.DebugMode)
+            Log.Information($"[QuickTransfer] 批次搬運順序：{(usedSorter ? "畫面順序 (ItemOrderModule)" : "實體順序")}, 共 {order.Length} 格, 起點 index={startIndex}");
+
+        return true;
+    }
+
+    /// <summary>
+    /// 從 <see cref="ItemOrderModule"/> 取出畫面顯示順序。
+    ///
+    /// sorter 的每個 entry 是 (Page, Slot)，實際容器 = sorter-&gt;InventoryType + Page。
+    /// 「自動整理」改寫的就是這份順序，實體格號完全不動——這正是不能拿實體格號來掃的原因。
+    ///
+    /// 取不到就回傳 null，呼叫端會退回實體順序。
+    /// </summary>
+    private (InventoryType Type, uint Slot)[]? TryBuildDisplayOrder(InventoryType[] sourceTypes, out bool usedSorter)
+    {
+        usedSorter = false;
+
+        try
+        {
+            var module = ItemOrderModule.Instance();
+            if (module == null || sourceTypes.Length == 0)
+                return null;
+
+            ItemOrderModuleSorter* sorter = null;
+
+            if (IsPlayerInventoryType(sourceTypes[0]))
+            {
+                sorter = module->InventorySorter;
+            }
+            else if (IsRetainerType(sourceTypes[0]))
+            {
+                // 每個僱員有自己的排序，用目前開著的那個。
+                if (module->RetainerSorter.TryGetValue(module->ActiveRetainerId, out var retainerSorter, false))
+                    sorter = retainerSorter.Value;
+            }
+
+            if (sorter == null)
+                return null;
+
+            var allowed = new HashSet<InventoryType>(sourceTypes);
+            var baseType = (uint)sorter->InventoryType;
+            var count = sorter->Items.LongCount;
+            if (count <= 0)
+                return null;
+
+            var result = new List<(InventoryType, uint)>((int)count);
+            for (long i = 0; i < count; i++)
+            {
+                var entry = sorter->Items[i].Value;
+                if (entry == null)
+                    continue;
+
+                var type = (InventoryType)(baseType + entry->Page);
+                if (!allowed.Contains(type))
+                    continue;
+
+                result.Add((type, entry->Slot));
+            }
+
+            if (result.Count == 0)
+                return null;
+
+            usedSorter = true;
+            return result.ToArray();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[QuickTransfer] 讀取 ItemOrderModule 顯示順序失敗，退回實體順序。");
+            return null;
+        }
+    }
+
+    /// <summary>實體順序：容器依序、每個容器 slot 0..Size-1。沒有 sorter 時的退路。</summary>
+    private static (InventoryType Type, uint Slot)[] BuildRawOrder(InventoryManager* inv, InventoryType[] sourceTypes)
+    {
+        var result = new List<(InventoryType, uint)>();
+        foreach (var type in sourceTypes)
+        {
+            var container = inv->GetInventoryContainer(type);
+            if (container == null)
+                continue;
+
+            for (var i = 0; i < container->Size; i++)
+                result.Add((type, (uint)i));
+        }
+
+        return result.ToArray();
     }
 
     private static InventoryType[] FilterLoaded(InventoryManager* inv, InventoryType[] types)
     {
-        var result = new System.Collections.Generic.List<InventoryType>(types.Length);
+        var result = new List<InventoryType>(types.Length);
         foreach (var t in types)
         {
             if (IsContainerLoaded(inv, t))
@@ -347,7 +450,7 @@ public sealed unsafe partial class Plugin
             bulk.NextAttemptAtMs = now + Math.Max(50, Configuration.BulkTransferDelayMs);
 
             if (Configuration.DebugMode)
-                Log.Information($"[QuickTransfer] 批次搬運：{srcType}#{srcSlot} (item={itemId} qty={qty}) -> {dstType}#{dstSlot}");
+                Log.Information($"[QuickTransfer] 批次搬運：#{bulk.OrderIndex + 1} {srcType}/{srcSlot} (item={itemId} qty={qty}) -> {dstType}/{dstSlot}");
 
             return;
         }
@@ -358,31 +461,14 @@ public sealed unsafe partial class Plugin
         srcType = default;
         srcSlot = 0;
 
-        var inv = InventoryManager.Instance();
-        if (inv == null)
+        if (bulk.Order == null || bulk.OrderIndex < 0 || bulk.OrderIndex >= bulk.Order.Length)
             return false;
 
-        while (bulk.SourceTypeIndex < bulk.SourceTypes.Length)
-        {
-            var type = bulk.SourceTypes[bulk.SourceTypeIndex];
-            var container = inv->GetInventoryContainer(type);
-            var size = container != null ? (int)container->Size : 0;
-
-            if (bulk.SourceSlot < size)
-            {
-                srcType = type;
-                srcSlot = (uint)bulk.SourceSlot;
-                return true;
-            }
-
-            bulk.SourceTypeIndex++;
-            bulk.SourceSlot = 0;
-        }
-
-        return false;
+        (srcType, srcSlot) = bulk.Order[bulk.OrderIndex];
+        return true;
     }
 
-    private void AdvanceBulkSlot() => bulk.SourceSlot++;
+    private void AdvanceBulkSlot() => bulk.OrderIndex++;
 
     private static bool IsSlotEmpty(InventoryType type, uint slot)
         => !TryGetItemInfo(type, (int)slot, out var itemId, out _, out var qty) || itemId == 0 || qty == 0;

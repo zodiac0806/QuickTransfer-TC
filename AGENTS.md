@@ -74,6 +74,7 @@ dump 方式：用 Lumina 開 `<GamePath>\game\sqpack`，`LuminaOptions.DefaultEx
 
 實作要點：
 
+- **掃格順序一定要用畫面顯示順序，不能用實體 slot 編號。** 背包的實體格號是伺服器給的，跟背包視窗看到的排列無關；沒「自動整理」過的背包兩者差很多，拿實體編號掃的結果就是使用者看到的「跳著搬」。顯示順序在 `ItemOrderModule` 的 sorter：entry 是 `(Page, Slot)`，實際容器 = `sorter->InventoryType + Page`。背包用 `InventorySorter`，僱員用 `RetainerSorter[ActiveRetainerId]`，公會儲物櫃沒有客戶端排序（顯示順序＝實體順序）。取不到 sorter 時退回實體順序。
 - **搬運用 `TryCompanyChestMoveItem`（＝`RaptureAtkModule::HandleItemMove`）**，跟拖放同一支。遊戲自己的檢查（綁定、裝備中、掛市場中…）全都還在。
 - **一次只送一筆，然後等來源格真的變動**才繼續（`HasSlotChanged`）。不要用固定 delay 硬送，會被伺服器擋掉而且無法察覺。
 - **「格」才是配額單位**：併堆只搬走一部分時同一格會再跑一次，此時不扣 `Remaining`。
