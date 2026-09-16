@@ -124,12 +124,19 @@ public sealed unsafe partial class Plugin
     }
 
     /// <summary>
-    /// 在 FreeCompanyChest 這個 addon 裡，找出游標正壓在哪一個 DragDrop 節點上，讀出它的 (容器, 格號)。
+    /// 在 FreeCompanyChest 這個 addon 裡，找出游標正壓著的儲物櫃格子，讀出它的 (容器, 格號)。
+    ///
+    /// 做法是把游標壓到的所有候選節點都收集起來、由小到大排序，再逐一讀 payload，
+    /// 取第一個 payload 真的是 FreeCompanyPage 的。三個理由：
+    ///   - 格子可能是 DragDrop 也可能是 ListItemRenderer（不同 addon 佈局不一樣），兩種都要收。
+    ///   - 節點是巢狀的，外層容器也可能被游標壓到；取面積最小的才是真正的那一格。
+    ///   - payload 不是每個節點都是 (InventoryType, slot)，有些帶的是別的東西
+    ///     （實測撞到過 37/30，37 根本不是 InventoryType）。所以一定要驗證，不能拿了就用。
     ///
     /// 為什麼不用 AgentFreeCompanyChest 的 ContextInventoryType／ContextInventorySlot：
-    /// API13 的 FFXIVClientStructs 沒有這個結構，要用就得自己寫死欄位位移。位移是跟著客戶端版本走的，
+    /// API13 的 FFXIVClientStructs 沒有這個結構，要用就得自己寫死欄位位移。位移跟著客戶端版本走，
     /// 台服跟其他服不見得一樣，讀錯了會搬到完全不相干的格子——這種錯誤比「沒反應」危險得多。
-    /// 節點命中測試沒有這個問題：payload 是節點自己帶的，版本無關。
+    /// 節點 payload 沒有這個問題，是版本無關的。
     /// </summary>
     private bool TryResolveCompanyChestCellUnderCursor(out InventoryType invType, out int slot, out string diag)
     {
@@ -154,24 +161,39 @@ public sealed unsafe partial class Plugin
 
             var scale = addon->Scale <= 0 ? 1f : addon->Scale;
 
-            AtkDragDropInterface* hit = null;
+            var candidates = new List<(nint Ddi, float Area)>();
             var inspected = 0;
-            WalkForDragDropUnderCursor(&addon->UldManager, mouseX, mouseY, scale, 0, ref hit, ref inspected);
+            CollectCellsUnderCursor(&addon->UldManager, mouseX, mouseY, scale, 0, candidates, ref inspected);
 
-            if (hit == null)
+            if (candidates.Count == 0)
             {
-                diag = $"游標({mouseX},{mouseY}) scale={scale:F2} 未命中，掃過 {inspected} 個 DragDrop 節點";
+                diag = $"游標({mouseX},{mouseY}) scale={scale:F2} 未命中任何格子節點，掃過 {inspected} 個";
                 return false;
             }
 
-            if (!TryGetSlotFromDragDropInterface(hit, out invType, out slot) || slot < 0)
+            // 由小到大：最內層、最小的那個才是真正的格子。
+            candidates.Sort(static (a, b) => a.Area.CompareTo(b.Area));
+
+            var seen = new List<string>();
+            foreach (var (ddiPtr, _) in candidates)
             {
-                diag = $"命中節點但 payload 解不出格號（掃過 {inspected} 個）";
-                return false;
+                if (!TryGetSlotFromDragDropInterface((AtkDragDropInterface*)ddiPtr, out var t, out var sl) || sl < 0)
+                    continue;
+
+                if (seen.Count < 6)
+                    seen.Add($"{(int)t}/{sl}");
+
+                if (!IsCompanyChestType(t))
+                    continue;
+
+                invType = t;
+                slot = sl;
+                diag = $"{t}/{sl}（候選 {candidates.Count}，掃過 {inspected}）";
+                return true;
             }
 
-            diag = $"{invType}/{slot}（掃過 {inspected} 個）";
-            return true;
+            diag = $"游標({mouseX},{mouseY}) 命中 {candidates.Count} 個節點但沒有一個是儲物櫃格子，掃過 {inspected} 個，payload=[{string.Join(" ", seen)}]";
+            return false;
         }
         catch (Exception ex)
         {
@@ -181,24 +203,24 @@ public sealed unsafe partial class Plugin
         }
     }
 
-    /// <summary>遞迴走 uld 樹，找游標壓著的 DragDrop 元件。深度上限只是保險，正常兩三層就到底。</summary>
-    private static void WalkForDragDropUnderCursor(
+    /// <summary>
+    /// 遞迴走 uld 樹，把游標壓著的候選格子全部收集起來（不要一命中就收工，外層容器也會被壓到）。
+    /// DragDrop 與 ListItemRenderer 兩種元件都收；碰到 List 就直接問它要 item renderer。
+    /// </summary>
+    private static void CollectCellsUnderCursor(
         AtkUldManager* uld,
         float mouseX,
         float mouseY,
         float scale,
         int depth,
-        ref AtkDragDropInterface* hit,
+        List<(nint Ddi, float Area)> candidates,
         ref int inspected)
     {
-        if (uld == null || depth > 8 || hit != null)
+        if (uld == null || depth > 10)
             return;
 
         for (var i = 0; i < uld->NodeListCount; i++)
         {
-            if (hit != null)
-                return;
-
             var node = uld->NodeList[i];
             if (node == null || !node->IsVisible())
                 continue;
@@ -207,27 +229,94 @@ public sealed unsafe partial class Plugin
             if (compNode == null || compNode->Component == null)
                 continue;
 
-            if (compNode->Component->GetComponentType() == ComponentType.DragDrop)
+            var component = compNode->Component;
+            var type = component->GetComponentType();
+
+            if (type is ComponentType.DragDrop or ComponentType.ListItemRenderer)
             {
                 inspected++;
-
-                var x = node->ScreenX;
-                var y = node->ScreenY;
-                var w = node->Width * scale;
-                var h = node->Height * scale;
-
-                if (w > 0 && h > 0 &&
-                    mouseX >= x && mouseX <= x + w &&
-                    mouseY >= y && mouseY <= y + h)
+                TryAddCandidate(node, GetDdi(component, type), mouseX, mouseY, scale, candidates);
+            }
+            else if (type == ComponentType.List)
+            {
+                // List 的 item renderer 不一定掛在 UldManager 的 NodeList 上，直接跟 List 要。
+                var list = (AtkComponentList*)component;
+                for (var r = 0; r < 512; r++)
                 {
-                    hit = &((AtkComponentDragDrop*)compNode->Component)->AtkDragDropInterface;
-                    return;
+                    AtkComponentListItemRenderer* renderer;
+                    try { renderer = list->GetItemRenderer(r); }
+                    catch { break; }
+
+                    if (renderer == null)
+                        break;
+
+                    var ownerNode = renderer->OwnerNode;
+                    if (ownerNode == null)
+                        continue;
+
+                    var resNode = (AtkResNode*)ownerNode;
+                    if (!resNode->IsVisible())
+                        continue;
+
+                    inspected++;
+                    TryAddCandidate(resNode, GetRendererDdi(renderer), mouseX, mouseY, scale, candidates);
                 }
             }
 
-            WalkForDragDropUnderCursor(&compNode->Component->UldManager, mouseX, mouseY, scale, depth + 1, ref hit, ref inspected);
+            CollectCellsUnderCursor(&component->UldManager, mouseX, mouseY, scale, depth + 1, candidates, ref inspected);
         }
     }
+
+    /// <summary>list item renderer 身上有兩個 DDI：內嵌的 DragDrop 子元件優先，沒有才用自己那個。</summary>
+    private static AtkDragDropInterface* GetRendererDdi(AtkComponentListItemRenderer* renderer)
+    {
+        if (renderer == null)
+            return null;
+
+        if (renderer->DragDropComponent != null)
+            return &renderer->DragDropComponent->AtkDragDropInterface;
+
+        return &renderer->AtkDragDropInterface;
+    }
+
+    private static AtkDragDropInterface* GetDdi(AtkComponentBase* component, ComponentType type)
+    {
+        if (component == null)
+            return null;
+
+        return type switch
+        {
+            ComponentType.DragDrop => &((AtkComponentDragDrop*)component)->AtkDragDropInterface,
+            ComponentType.ListItemRenderer => GetRendererDdi((AtkComponentListItemRenderer*)component),
+            _ => null,
+        };
+    }
+
+    private static void TryAddCandidate(
+        AtkResNode* node,
+        AtkDragDropInterface* ddi,
+        float mouseX,
+        float mouseY,
+        float scale,
+        List<(nint Ddi, float Area)> candidates)
+    {
+        if (node == null || ddi == null)
+            return;
+
+        var x = node->ScreenX;
+        var y = node->ScreenY;
+        var w = node->Width * scale;
+        var h = node->Height * scale;
+
+        if (w <= 0 || h <= 0)
+            return;
+
+        if (mouseX < x || mouseX > x + w || mouseY < y || mouseY > y + h)
+            return;
+
+        candidates.Add(((nint)ddi, w * h));
+    }
+
 
     private bool StartBulkTransfer(InventoryType sourceType, uint sourceSlot, long now)
     {
