@@ -75,6 +75,9 @@ public sealed unsafe partial class Plugin
     /// <summary>被擋之後的退避間隔，明顯拉長，不要繼續用一般的每格間隔去頂。</summary>
     private const int BulkThrottleBackoffMs = 1500;
 
+    /// <summary>按下組合鍵到送出第一筆之間的緩衝，讓右鍵選單先收掉。</summary>
+    private const int BulkStartDelayMs = 400;
+
     /// <summary>
     /// 數量視窗開著超過這個時間還沒被處理掉，就判定卡住了。
     /// 會發生在自動確認被關掉、或這個視窗不是我們預期的那一種（於是沒人去按確定）。
@@ -584,10 +587,19 @@ public sealed unsafe partial class Plugin
             DestTypes = destTypes,
             Remaining = count <= 0 ? int.MaxValue : count,
             Moved = 0,
-            NextAttemptAtMs = now,
+
+            // 不要馬上送第一筆。右鍵選單此時還開著（要再過 50ms 才關），儲物櫃在
+            // 選單還開著時會把操作回絕成「處理公會儲物櫃失敗」——實測第一筆固定失敗
+            // 就是這個原因。等選單收掉、addon 狀態穩定再動手。
+            NextAttemptAtMs = now + BulkStartDelayMs,
             // 整包背包最壞情況也就一兩分鐘；給寬一點但不要無上限。
             ExpiresAtMs = now + 180000,
         };
+
+        // 這是使用者主動按下的新一輪操作，把先前累積的儲物櫃退避清掉，
+        // 否則上一次的失敗會讓這次一開始就先乾等好幾秒。
+        companyChestBusyHits = 0;
+        companyChestBusyUntilMs = 0;
 
         var scope = count <= 0 ? "到最後一格" : $"{count} 格";
 
@@ -811,6 +823,14 @@ public sealed unsafe partial class Plugin
         if (!IsRetainerOpen() && !IsCompanyChestOpen())
         {
             StopBulkTransfer("容器視窗已關閉。");
+            return;
+        }
+
+        // 右鍵選單還開著就先等。儲物櫃在選單開啟期間會回絕操作（訊息是「處理公會儲物櫃失敗」），
+        // 那不是真的失敗，純粹是時機不對。
+        if (TryGetVisibleAddon(ContextMenuAddonName, out _))
+        {
+            bulk.NextAttemptAtMs = Math.Max(bulk.NextAttemptAtMs, now + 150);
             return;
         }
 
