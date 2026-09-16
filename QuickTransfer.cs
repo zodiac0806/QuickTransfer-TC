@@ -1656,7 +1656,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         // [TC] Ctrl＋Shift＋右鍵：以點到的那一格為起點，整批搬。
         if (mode == ModifierMode.Bulk)
         {
-            if (!specialOpen)
+            // 兵裝庫不在上游的 specialOpen 定義裡（它原本只管鞍囊／僱員／儲物櫃），
+            // 但批次搬運支援背包 ↔ 兵裝庫，所以這裡要另外算進來。
+            if (!specialOpen && !IsArmouryOpen())
                 return;
 
             var bulkNow = Environment.TickCount64;
@@ -4689,6 +4691,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     }
 
     // Use InventoryHelpers for these functions
+    /// <summary>兵裝庫視窗是否開著。上游沒有這個 helper，因為它原本不需要。</summary>
+    private static bool IsArmouryOpen() => InventoryHelpers.IsAnyAddonVisibleAnyIndex(ArmouryAddonNames);
+
     private static bool IsPlayerInventoryType(InventoryType inventoryType) => InventoryHelpers.IsPlayerInventoryType(inventoryType);
     private static bool IsArmouryType(InventoryType inventoryType) => InventoryHelpers.IsArmouryType(inventoryType);
     private static bool IsSaddlebagOpen() => InventoryHelpers.IsSaddlebagOpen();

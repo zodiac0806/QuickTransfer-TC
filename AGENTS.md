@@ -80,6 +80,8 @@ dump 方式：用 Lumina 開 `<GamePath>\game\sqpack`，`LuminaOptions.DefaultEx
 - **「格」才是配額單位**：併堆只搬走一部分時同一格會再跑一次，此時不扣 `Remaining`。
 - 同一格送 `BulkMaxStuckRetries` 次還是不動 → 判定這個道具搬不動（綁定、裝備中、掛市場…），**直接中止並在聊天視窗點名是哪個道具**。不要改回「跳過繼續跑」：使用者要的是停下來，而且跳過很可能一路撞上一整排都搬不動的東西。
 - 數量視窗開著時整個狀態機會讓路，但有 `BulkInputNumericStallMs` 看門狗：超時沒被處理就中止，視窗留給使用者。少了這個，自動確認一旦失效（例如提示字串沒認出來）整批就會每個 frame 都 return，表現出來就是卡死。
+- **兵裝庫存入的目標要逐件決定**：兵裝庫按部位分容器（頭進 `ArmoryHead`、戒指進 `ArmoryRings`…），所以 `DestTypes` 先不算，改在迴圈裡用 `GetArmouryTypesForItem` 查。判斷走 `EquipSlotCategory` 資料表（每個部位一欄，值 1 代表佔用該部位；-1 是「會擋住該部位」，不算），不要自己寫死 itemId 或猜分類。不是裝備就跳過。
+- 顯示順序的 sorter：背包 `InventorySorter`、僱員 `RetainerSorter[ActiveRetainerId]`、鞍囊 `SaddleBagSorter`／`PremiumSaddleBagSorter`、兵裝庫每個部位各有一個（見 `GetArmourySorter`）。只有公會儲物櫃沒有 sorter。
 - 儲物櫃**只掃右鍵的那一頁**：其他分頁沒開過就沒載入，硬掃會讀到空資料。僱員與背包則用 `IsContainerLoaded` 過濾後全掃。
 - 搬運中途僱員／儲物櫃視窗關掉 → 立刻停手。
 

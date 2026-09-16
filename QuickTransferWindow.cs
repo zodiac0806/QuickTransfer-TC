@@ -246,7 +246,9 @@ public class QuickTransferWindow : Window, IDisposable
             ImGui.BulletText("Shift＋右鍵：對目前開著的容器執行對應的搬運動作");
             ImGui.BulletText("Ctrl＋右鍵：鞍囊／僱員／公會儲物櫃開著時，優先做背包 ↔ 兵裝庫");
             ImGui.BulletText("Alt＋右鍵：把一堆道具對半拆分（在公會儲物櫃則是取出一半）");
-            ImGui.BulletText("Ctrl＋Shift＋右鍵：以這一格為起點整批搬（背包→僱員／儲物櫃，或反向搬回背包）。跑到一半再按一次就中止。");
+            ImGui.BulletText("Ctrl＋Shift＋右鍵：以這一格為起點整批搬。跑到一半再按一次就中止。");
+            ImGui.BulletText("　批次搬運的方向看你開著什麼：背包 →（僱員＞公會儲物櫃＞陸行鳥鞍囊＞兵裝庫），反向則是搬回背包。");
+            ImGui.BulletText("　存進兵裝庫時會依裝備部位自動分到對應的容器；不是裝備的會跳過。");
             ImGui.BulletText("背包＋陸行鳥鞍囊：背包 →「放入陸行鳥鞍囊」，鞍囊 →「從陸行鳥鞍囊中取回」");
             ImGui.BulletText("兵裝庫＋陸行鳥鞍囊：兵裝庫 →「放入陸行鳥鞍囊」");
             ImGui.BulletText("背包＋僱員：背包 →「交給僱員保管」，僱員 →「從僱員處取回」");

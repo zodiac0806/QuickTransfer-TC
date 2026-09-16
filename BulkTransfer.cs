@@ -37,6 +37,12 @@ public sealed unsafe partial class Plugin
         /// <summary>目標容器清單，找位置時依序試。</summary>
         public InventoryType[] DestTypes;
 
+        /// <summary>
+        /// 存進兵裝庫。兵裝庫是按部位分容器的（頭進 ArmoryHead、戒指進 ArmoryRings…），
+        /// 所以目標不能先算好，要逐件看道具的部位決定。此時 DestTypes 不使用。
+        /// </summary>
+        public bool ArmouryDeposit;
+
         /// <summary>還能搬幾格；int.MaxValue 代表「到底為止」。</summary>
         public int Remaining;
 
@@ -572,7 +578,7 @@ public sealed unsafe partial class Plugin
             return true;
         }
 
-        if (!TryBuildBulkPlan(sourceType, sourceSlot, out var order, out var startIndex, out var destTypes, out var reason))
+        if (!TryBuildBulkPlan(sourceType, sourceSlot, out var order, out var startIndex, out var destTypes, out var armouryDeposit, out var reason))
         {
             if (Configuration.DebugMode)
                 Log.Information($"[QuickTransfer] 批次搬運未啟動：{reason} (src={sourceType} slot={sourceSlot})");
@@ -586,6 +592,7 @@ public sealed unsafe partial class Plugin
             Order = order,
             OrderIndex = startIndex,
             DestTypes = destTypes,
+            ArmouryDeposit = armouryDeposit,
             Remaining = count <= 0 ? int.MaxValue : count,
             Moved = 0,
 
@@ -620,11 +627,13 @@ public sealed unsafe partial class Plugin
         out (InventoryType Type, uint Slot)[] order,
         out int startIndex,
         out InventoryType[] destTypes,
+        out bool armouryDeposit,
         out string reason)
     {
         order = [];
         startIndex = -1;
         destTypes = [];
+        armouryDeposit = false;
         reason = string.Empty;
 
         var inv = InventoryManager.Instance();
@@ -641,6 +650,7 @@ public sealed unsafe partial class Plugin
             // 背包 → 僱員／儲物櫃。兩個都開著的話以僱員優先（僱員視窗是模態的，比較不會誤判）。
             sourceTypes = FilterLoaded(inv, PlayerInventoryTypes);
 
+            // 開著哪個就往哪搬。優先序：僱員 > 儲物櫃 > 鞍囊 > 兵裝庫。
             if (IsRetainerOpen())
             {
                 destTypes = FilterLoaded(inv, RetainerInventoryTypes);
@@ -659,9 +669,24 @@ public sealed unsafe partial class Plugin
                     return false;
                 }
             }
+            else if (IsSaddlebagOpen())
+            {
+                destTypes = FilterLoaded(inv, SaddlebagInventoryTypes);
+                if (destTypes.Length == 0)
+                {
+                    reason = "鞍囊尚未載入";
+                    return false;
+                }
+            }
+            else if (IsArmouryOpen())
+            {
+                // 目標逐件決定，這裡先不算。
+                armouryDeposit = true;
+                destTypes = [];
+            }
             else
             {
-                reason = "沒有開著僱員或公會儲物櫃";
+                reason = "沒有開著僱員、公會儲物櫃、陸行鳥鞍囊或兵裝庫";
                 return false;
             }
         }
@@ -677,13 +702,25 @@ public sealed unsafe partial class Plugin
             sourceTypes = [sourceType];
             destTypes = FilterLoaded(inv, PlayerInventoryTypes);
         }
+        else if (IsSaddlebagType(sourceType))
+        {
+            sourceTypes = FilterLoaded(inv, SaddlebagInventoryTypes);
+            destTypes = FilterLoaded(inv, PlayerInventoryTypes);
+        }
+        else if (IsArmouryType(sourceType))
+        {
+            // 兵裝庫只掃右鍵的那一個部位。掃全部等於把整個兵裝庫倒出來，
+            // 那不是使用者點一格會預期的事。
+            sourceTypes = [sourceType];
+            destTypes = FilterLoaded(inv, PlayerInventoryTypes);
+        }
         else
         {
             reason = $"不支援的來源容器 {sourceType}";
             return false;
         }
 
-        if (sourceTypes.Length == 0 || destTypes.Length == 0)
+        if (sourceTypes.Length == 0 || (destTypes.Length == 0 && !armouryDeposit))
         {
             reason = "容器尚未載入";
             return false;
@@ -743,6 +780,16 @@ public sealed unsafe partial class Plugin
                 if (module->RetainerSorter.TryGetValue(module->ActiveRetainerId, out var retainerSorter, false))
                     sorter = retainerSorter.Value;
             }
+            else if (IsSaddlebagType(sourceTypes[0]))
+            {
+                sorter = sourceTypes[0] is InventoryType.PremiumSaddleBag1 or InventoryType.PremiumSaddleBag2
+                    ? module->PremiumSaddleBagSorter
+                    : module->SaddleBagSorter;
+            }
+            else if (IsArmouryType(sourceTypes[0]))
+            {
+                sorter = GetArmourySorter(module, sourceTypes[0]);
+            }
 
             if (sorter == null)
                 return null;
@@ -777,6 +824,66 @@ public sealed unsafe partial class Plugin
         {
             Log.Warning(ex, "[QuickTransfer] 讀取 ItemOrderModule 顯示順序失敗，退回實體順序。");
             return null;
+        }
+    }
+
+    /// <summary>兵裝庫每個部位有自己的排序器。</summary>
+    private static ItemOrderModuleSorter* GetArmourySorter(ItemOrderModule* module, InventoryType type) => type switch
+    {
+        InventoryType.ArmoryMainHand => module->ArmouryMainHandSorter,
+        InventoryType.ArmoryOffHand => module->ArmouryOffHandSorter,
+        InventoryType.ArmoryHead => module->ArmouryHeadSorter,
+        InventoryType.ArmoryBody => module->ArmouryBodySorter,
+        InventoryType.ArmoryHands => module->ArmouryHandsSorter,
+        InventoryType.ArmoryWaist => module->ArmouryWaistSorter,
+        InventoryType.ArmoryLegs => module->ArmouryLegsSorter,
+        InventoryType.ArmoryFeets => module->ArmouryFeetSorter,
+        InventoryType.ArmoryEar => module->ArmouryEarsSorter,
+        InventoryType.ArmoryNeck => module->ArmouryNeckSorter,
+        InventoryType.ArmoryWrist => module->ArmouryWristsSorter,
+        InventoryType.ArmoryRings => module->ArmouryRingsSorter,
+        InventoryType.ArmorySoulCrystal => module->ArmourySoulCrystalSorter,
+        _ => null,
+    };
+
+    /// <summary>
+    /// 這件道具該收進兵裝庫的哪個部位。
+    ///
+    /// 用 EquipSlotCategory 資料表判斷，不要自己寫死 itemId 或猜分類：該表每個部位一欄，
+    /// 值為 1 代表這件裝備佔用該部位（-1 是「佔用時會擋住這個部位」，不算）。
+    /// 不是裝備就回空陣列。
+    /// </summary>
+    private static InventoryType[] GetArmouryTypesForItem(uint itemId)
+    {
+        try
+        {
+            var items = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+            if (items == null || !items.TryGetRow(NormalizeItemId(itemId), out var item))
+                return [];
+
+            var categories = DataManager.GetExcelSheet<Lumina.Excel.Sheets.EquipSlotCategory>();
+            if (categories == null || !categories.TryGetRow(item.EquipSlotCategory.RowId, out var c))
+                return [];
+
+            if (c.MainHand == 1) return [InventoryType.ArmoryMainHand];
+            if (c.OffHand == 1) return [InventoryType.ArmoryOffHand];
+            if (c.Head == 1) return [InventoryType.ArmoryHead];
+            if (c.Body == 1) return [InventoryType.ArmoryBody];
+            if (c.Gloves == 1) return [InventoryType.ArmoryHands];
+            if (c.Waist == 1) return [InventoryType.ArmoryWaist];
+            if (c.Legs == 1) return [InventoryType.ArmoryLegs];
+            if (c.Feet == 1) return [InventoryType.ArmoryFeets];
+            if (c.Ears == 1) return [InventoryType.ArmoryEar];
+            if (c.Neck == 1) return [InventoryType.ArmoryNeck];
+            if (c.Wrists == 1) return [InventoryType.ArmoryWrist];
+            if (c.FingerL == 1 || c.FingerR == 1) return [InventoryType.ArmoryRings];
+            if (c.SoulCrystal == 1) return [InventoryType.ArmorySoulCrystal];
+
+            return [];
+        }
+        catch
+        {
+            return [];
         }
     }
 
@@ -821,7 +928,7 @@ public sealed unsafe partial class Plugin
         }
 
         // 來源／目標的視窗被關掉就停手，不然會對著已經失效的容器亂搬。
-        if (!IsRetainerOpen() && !IsCompanyChestOpen())
+        if (!IsRetainerOpen() && !IsCompanyChestOpen() && !IsSaddlebagOpen() && !IsArmouryOpen())
         {
             StopBulkTransfer("容器視窗已關閉。");
             return;
@@ -942,10 +1049,24 @@ public sealed unsafe partial class Plugin
                 continue;
             }
 
-            var maxStack = GetItemStackSize(itemId);
-            if (!TryFindBulkDestSlot(bulk.DestTypes, itemId, isHq, maxStack, out var dstType, out var dstSlot))
+            // 存進兵裝庫時，目標容器要看這件裝備是什麼部位。
+            var destTypes = bulk.DestTypes;
+            if (bulk.ArmouryDeposit)
             {
-                StopBulkTransfer($"目標已滿（{DescribeContainer(bulk.DestTypes.Length > 0 ? bulk.DestTypes[0] : srcType)} 沒有空位）。");
+                destTypes = GetArmouryTypesForItem(itemId);
+                if (destTypes.Length == 0)
+                {
+                    // 不是裝備，兵裝庫收不了，跳過。
+                    bulk.Skipped++;
+                    AdvanceBulkSlot();
+                    continue;
+                }
+            }
+
+            var maxStack = GetItemStackSize(itemId);
+            if (!TryFindBulkDestSlot(destTypes, itemId, isHq, maxStack, out var dstType, out var dstSlot))
+            {
+                StopBulkTransfer($"目標已滿（{DescribeContainer(destTypes.Length > 0 ? destTypes[0] : srcType)} 沒有空位）。");
                 return;
             }
 
