@@ -40,6 +40,11 @@ internal static unsafe class ContextMenuHandler
         var t = menuText.Trim();
         static bool Has(string s, string needle) => s.Contains(needle, StringComparison.OrdinalIgnoreCase);
 
+        // [TC] 先用遊戲資料表裡「當前客戶端語言」的正式字串比對（台服＝繁中選單）。
+        //      比不到才往下走上游那套英文啟發式，等於英文客戶端行為完全不變。
+        if (GameStrings.MatchesClientLabel(desiredAction, t))
+            return true;
+
         return desiredAction switch
         {
             AutoContextAction.AddAllToSaddlebag =>
@@ -318,7 +323,8 @@ internal static unsafe class ContextMenuHandler
 
             // If Sort isn't present (because the container is already sorted), the menu often contains "Undo Sort" instead.
             // We treat that as "already sorted" and do nothing (closing the menu).
-            if (undoSortIdx < 0 && text.Trim().Equals("Undo Sort", StringComparison.OrdinalIgnoreCase))
+            // [TC] 「撤銷整理」在台服是 Addon#1390，不是 "Undo Sort"。
+            if (undoSortIdx < 0 && GameStrings.IsUndoSortLabel(text))
             {
                 undoSortIdx = i;
                 undoSortText = text;

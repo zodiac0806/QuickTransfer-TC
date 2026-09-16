@@ -3,7 +3,7 @@
   "Name": "QuickTransfer",
   "InternalName": "QuickTransfer",
   "AssemblyVersion": "1.0.5.0",
-  "Description": "Automate inventory transfers with Shift/Ctrl/Alt + Right-Click. Trade window, vendor quick sell, FC chest.",
+  "Description": "Shift／Ctrl／Alt＋右鍵，一下把道具丟進僱員、陸行鳥鞍囊、兵裝庫、公會儲物櫃，或直接賣給商店、放進交易視窗。選單文字改用遊戲資料表比對，台服繁中客戶端可用。",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/Knack117/QuickTransfer",
   "Tags": [
@@ -11,11 +11,11 @@
     "utility",
     "quality of life"
   ],
-  "DalamudApiLevel": 14,
+  "DalamudApiLevel": 13,
   "LoadRequiredState": 0,
   "LoadSync": false,
   "CanUnloadAsync": false,
   "LoadPriority": 0,
-  "Punchline": "Quick item transfer + split helpers.",
+  "Punchline": "右鍵一下，道具就到位。",
   "AcceptsFeedback": true
 }

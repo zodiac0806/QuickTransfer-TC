@@ -1540,9 +1540,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
             // These strings appear as system error toasts and (typically) also in the log/chat.
             // If we see them, stop the state machine and back off for a few seconds.
-            if (text.Contains("Another player is using the chest", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("Unable to store item", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("Unable to complete company chest action", StringComparison.OrdinalIgnoreCase))
+            // [TC] 這幾句在台服是中文（LogMessage#1861/1873/1874），改用資料表比對，英文版仍然照舊認得。
+            if (GameStrings.IsCompanyChestBusyMessage(text))
             {
                 var now = Environment.TickCount64;
                 companyChestBusyHits = Math.Min(companyChestBusyHits + 1, 10);
@@ -2515,7 +2514,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             }
 
             var eventType = (AtkEventType)recv.AtkEventType;
-            var eventData = (AtkEventData*)recv.AtkEventData;
+            // [TC] API13 的 AddonReceiveEventArgs 還沒有 AtkEventData 這個屬性，事件資料指標叫 Data；
+            //      API14 才改名為 AtkEventData。指向的東西一樣，只是名字不同。
+            var eventData = (AtkEventData*)recv.Data;
             var mouseButtonId = eventData != null ? eventData->MouseData.ButtonId : (byte)255;
             var dragDropMouseButtonId = eventData != null ? eventData->DragDropData.MouseButtonId : (byte)255;
 
@@ -4319,7 +4320,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     if (Configuration.DebugMode)
                         Log.Information($"[QuickTransfer] ContextMenu listId={listId} row={i} label='{label}'");
 
-                    if (!label.Equals("Remove", StringComparison.OrdinalIgnoreCase))
+                    // [TC] 部隊儲物櫃的「取出」在台服是 Addon#2950，走同一套語言中立比對。
+                    if (!ContextMenuHandler.ContextLabelMatches(ContextMenuHandler.AutoContextAction.RemoveFromCompanyChest, label))
                         continue;
 
                     // Trigger via callback payload (matches the inventory context menu pattern).

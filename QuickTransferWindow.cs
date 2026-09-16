@@ -10,12 +10,12 @@ public class QuickTransferWindow : Window, IDisposable
     private readonly Configuration _config;
 
     public QuickTransferWindow(Configuration config)
-        : base("QuickTransfer Settings###QuickTransferConfig")
+        : base("QuickTransfer 設定###QuickTransferConfig")
     {
         _config = config;
 
         SizeCondition = ImGuiCond.FirstUseEver;
-        Size = new Vector2(500, 400);
+        Size = new Vector2(560, 440);
     }
 
     public void Dispose()
@@ -25,94 +25,94 @@ public class QuickTransferWindow : Window, IDisposable
 
     public override void Draw()
     {
-            // Main settings
-            ImGui.TextColored(new Vector4(0.4f, 0.8f, 1f, 1f), "QuickTransfer Configuration");
+            // 主要設定
+            ImGui.TextColored(new Vector4(0.4f, 0.8f, 1f, 1f), "QuickTransfer 設定");
             ImGui.Separator();
-            
-            // Enable/Disable
+
+            // 啟用／停用
             var enabled = _config.Enabled;
-            if (ImGui.Checkbox("Enabled###Enabled", ref enabled))
+            if (ImGui.Checkbox("啟用###Enabled", ref enabled))
             {
                 _config.Enabled = enabled;
                 _config.Save();
             }
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 1f), _config.Enabled ? "(Active)" : "(Disabled)");
-            
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 1f), _config.Enabled ? "（運作中）" : "（已停用）");
+
             ImGui.Spacing();
-            
-            // Debug mode
+
+            // 除錯模式
             var debugMode = _config.DebugMode;
-            if (ImGui.Checkbox("Debug Mode###DebugMode", ref debugMode))
+            if (ImGui.Checkbox("除錯模式###DebugMode", ref debugMode))
             {
                 _config.DebugMode = debugMode;
                 _config.Save();
             }
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "(Logs to chat - for troubleshooting)");
-            
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（把過程輸出到聊天視窗，排查問題用）");
+
             ImGui.Spacing();
 
-            // Middle-click sort
+            // 中鍵整理
             var mmbSort = _config.EnableMiddleClickSort;
-            if (ImGui.Checkbox("Enable Middle-Click Sort###EnableMiddleClickSort", ref mmbSort))
+            if (ImGui.Checkbox("啟用中鍵自動整理###EnableMiddleClickSort", ref mmbSort))
             {
                 _config.EnableMiddleClickSort = mmbSort;
                 _config.Save();
             }
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "(MMB on an item: auto-select \"Sort\" when available)");
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（中鍵點道具：有「自動整理」就自動選）");
 
-            // Company Chest
+            // 公會儲物櫃
             var enableCompanyChest = _config.EnableCompanyChest;
-            if (ImGui.Checkbox("Enable Company Chest (Free Company Chest)###EnableCompanyChest", ref enableCompanyChest))
+            if (ImGui.Checkbox("啟用公會儲物櫃支援###EnableCompanyChest", ref enableCompanyChest))
             {
                 _config.EnableCompanyChest = enableCompanyChest;
                 _config.Save();
             }
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "(Shift/Alt: deposit/withdraw while FC chest is open)");
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（儲物櫃開著時，Shift／Alt 直接存入或取出）");
 
             var mmbCompanyOrganize = _config.EnableCompanyChestMiddleClickOrganize;
-            if (ImGui.Checkbox("Company Chest: Middle-Click Organize###EnableCompanyChestMiddleClickOrganize", ref mmbCompanyOrganize))
+            if (ImGui.Checkbox("公會儲物櫃：中鍵整理###EnableCompanyChestMiddleClickOrganize", ref mmbCompanyOrganize))
             {
                 _config.EnableCompanyChestMiddleClickOrganize = mmbCompanyOrganize;
                 _config.Save();
             }
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "(MMB: auto-stack + compact in FC chest)");
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（中鍵：自動疊堆並壓縮空格）");
 
             var autoConfirmQty = _config.AutoConfirmCompanyChestQuantity;
-            if (ImGui.Checkbox("Auto-confirm quantity prompts (Company Chest / Split)###AutoConfirmCompanyChestQty", ref autoConfirmQty))
+            if (ImGui.Checkbox("自動確認數量視窗（公會儲物櫃／拆分）###AutoConfirmCompanyChestQty", ref autoConfirmQty))
             {
                 _config.AutoConfirmCompanyChestQuantity = autoConfirmQty;
                 _config.Save();
             }
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.85f, 0.75f, 0.45f, 0.9f), "(Best effort; disable if it misbehaves)");
+            ImGui.TextColored(new Vector4(0.85f, 0.75f, 0.45f, 0.9f), "（盡力而為，怪怪的就關掉）");
 
-            // Vendor Quick Sell
+            // 商店快速出售
             var enableVendorQuickSell = _config.EnableVendorQuickSell;
-            if (ImGui.Checkbox("Enable Vendor Quick Sell###EnableVendorQuickSell", ref enableVendorQuickSell))
+            if (ImGui.Checkbox("啟用商店快速出售###EnableVendorQuickSell", ref enableVendorQuickSell))
             {
                 _config.EnableVendorQuickSell = enableVendorQuickSell;
                 _config.Save();
             }
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "(Shift+RClick: auto-select \"Sell\" when vendor is open)");
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（商店開著時 Shift＋右鍵：自動選「出售」）");
 
             var autoConfirmVendorSell = _config.AutoConfirmVendorSell;
-            if (ImGui.Checkbox("Auto-confirm vendor sell dialogs###AutoConfirmVendorSell", ref autoConfirmVendorSell))
+            if (ImGui.Checkbox("自動確認出售視窗###AutoConfirmVendorSell", ref autoConfirmVendorSell))
             {
                 _config.AutoConfirmVendorSell = autoConfirmVendorSell;
                 _config.Save();
             }
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "(Auto-fill quantity, confirm \"How many?\", and click OK on \"Are you certain?\")");
-            
-            // Transfer cooldown
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（自動填數量並按下確定）");
+
+            // 操作冷卻
             ImGui.Spacing();
-            ImGui.Text("Transfer Cooldown (ms):");
+            ImGui.Text("操作冷卻（毫秒）：");
             ImGui.SameLine();
             ImGui.SetNextItemWidth(100);
             var cooldown = _config.TransferCooldownMs;
@@ -121,37 +121,40 @@ public class QuickTransferWindow : Window, IDisposable
                 _config.TransferCooldownMs = Math.Max(0, Math.Min(1000, cooldown));
                 _config.Save();
             }
-            
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "（防手滑連點造成重複搬運）");
+
             ImGui.Spacing();
             ImGui.Separator();
-            
-            // Instructions
-            ImGui.TextColored(new Vector4(0.4f, 0.8f, 1f, 1f), "How to Use:");
-            ImGui.BulletText("Hold SHIFT and RIGHT-CLICK to use the open container's quick action");
-            ImGui.BulletText("Hold CTRL and RIGHT-CLICK to use Armoury actions when a Saddlebag, Retainer, or Company Chest is open (Inventory ↔ Armoury)");
-            ImGui.BulletText("Hold ALT and RIGHT-CLICK to split a stack in half (or remove half from Company Chest)");
-            ImGui.BulletText("Inventory + Saddlebags: Inventory → \"Add All to Saddlebag\", Saddlebags → \"Remove All from Saddlebag\"");
-            ImGui.BulletText("Armoury + Saddlebags: Armoury → \"Add All to Saddlebag\"");
-            ImGui.BulletText("Inventory + Retainer: Inventory → \"Entrust to Retainer\", Retainer → \"Retrieve from Retainer\"");
-            ImGui.BulletText("Armoury + Retainer: Armoury → \"Entrust to Retainer\", Retainer → \"Retrieve from Retainer\"");
-            ImGui.BulletText("Retainer + Saddlebags: Retainer → \"Add All to Saddlebag\", Saddlebags → \"Entrust to Retainer\"");
-            ImGui.BulletText("Inventory + Armoury (no special container): (Gear) Inventory → \"Place in Armoury Chest\", Armoury → \"Return to Inventory\"");
-            ImGui.BulletText("Company Chest (FreeCompanyChest) open: Shift+RClick Inventory/Armoury deposits, Shift+RClick Company Chest withdraws (\"Remove\")");
-            ImGui.BulletText("Vendor Shop open: Shift+RClick to auto-select \"Sell\"; enable \"Auto-confirm vendor sell\" to auto-fill quantity and confirm.");
-            ImGui.BulletText("Middle-Click: Sort the clicked container when a \"Sort\" menu entry exists. In Company Chest, MMB runs an organize pass (stack + compact).");
-            ImGui.BulletText("Use /qt or click 'Open Config' in plugin list to reopen this window");
-            
+
+            // 使用說明
+            ImGui.TextColored(new Vector4(0.4f, 0.8f, 1f, 1f), "怎麼用：");
+            ImGui.BulletText("Shift＋右鍵：對目前開著的容器執行對應的搬運動作");
+            ImGui.BulletText("Ctrl＋右鍵：鞍囊／僱員／公會儲物櫃開著時，優先做背包 ↔ 兵裝庫");
+            ImGui.BulletText("Alt＋右鍵：把一堆道具對半拆分（在公會儲物櫃則是取出一半）");
+            ImGui.BulletText("背包＋陸行鳥鞍囊：背包 →「放入陸行鳥鞍囊」，鞍囊 →「從陸行鳥鞍囊中取回」");
+            ImGui.BulletText("兵裝庫＋陸行鳥鞍囊：兵裝庫 →「放入陸行鳥鞍囊」");
+            ImGui.BulletText("背包＋僱員：背包 →「交給僱員保管」，僱員 →「從僱員處取回」");
+            ImGui.BulletText("兵裝庫＋僱員：兵裝庫 →「交給僱員保管」，僱員 →「從僱員處取回」");
+            ImGui.BulletText("僱員＋陸行鳥鞍囊：僱員 →「放入陸行鳥鞍囊」，鞍囊 →「交給僱員保管」");
+            ImGui.BulletText("背包＋兵裝庫（沒開其他容器時）：裝備 →「放入兵裝庫」，兵裝庫 →「放入背包」");
+            ImGui.BulletText("公會儲物櫃開著：Shift＋右鍵背包／兵裝庫＝存入，Shift＋右鍵儲物櫃＝取出");
+            ImGui.BulletText("商店開著：Shift＋右鍵自動選「出售」，開啟自動確認就會連數量與確認視窗一起處理");
+            ImGui.BulletText("中鍵：該容器有「自動整理」就直接整理；在公會儲物櫃則是執行疊堆＋壓縮");
+            ImGui.BulletText("用 /qt 或插件清單的「開啟設定」可以叫回這個視窗");
+
             ImGui.Spacing();
             ImGui.Separator();
-            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.4f, 1f), "Notes:");
-            ImGui.BulletText("This uses the game's existing context menu options (no manual slot moving).");
-            ImGui.BulletText("If an option isn't available for the clicked item, nothing happens.");
-            ImGui.BulletText("If you tap Shift briefly, the action still triggers (it is captured when the menu opens).");
-            ImGui.BulletText("For Company Chest deposits, this uses the same UI move function as drag+drop would.");
+            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.4f, 1f), "注意事項：");
+            ImGui.BulletText("這個插件只是幫你點遊戲本來就有的右鍵選單，不會自己搬格子。");
+            ImGui.BulletText("如果該道具沒有對應的選單項目，按了就是沒反應，這是正常的。");
+            ImGui.BulletText("Shift 只按一下就放開也沒關係，按鍵狀態是在選單開啟的瞬間就記下來的。");
+            ImGui.BulletText("公會儲物櫃的存入走的是跟拖放同一個遊戲內部函式。");
+            ImGui.BulletText("選單項目是用遊戲資料表比對的，切換客戶端語言一樣能用。");
             ImGui.Spacing();
-            
-            // Save button
-            if (ImGui.Button("Save & Close###SaveClose"))
+
+            // 儲存
+            if (ImGui.Button("儲存並關閉###SaveClose"))
             {
                 _config.Save();
                 IsOpen = false;

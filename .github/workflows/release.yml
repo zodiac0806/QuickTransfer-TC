@@ -4,55 +4,49 @@ on:
   push:
     tags:
       - "v*"
-
+  workflow_dispatch:
 permissions:
   contents: write
-
 jobs:
-  build-release:
+  build:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "10.0.x"
-
-      - name: Fetch Dalamud SDK libs (api14)
+          submodules: recursive
+      - name: Install .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 9.x
+      - name: Download Dalamud (pinned TC-compatible build)
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $url = "https://raw.githubusercontent.com/goatcorp/dalamud-distrib/main/api14/latest.zip"
-          $tmp = Join-Path $env:RUNNER_TEMP "dalamud"
-          $zip = Join-Path $tmp "dalamud.zip"
-          $dst = Join-Path $tmp "extracted"
-          New-Item -ItemType Directory -Force $dst | Out-Null
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $dst -Force
-
-          $dalamudDll = Get-ChildItem -Path $dst -Recurse -Filter "Dalamud.dll" | Select-Object -First 1
-          if (-not $dalamudDll) { throw "Dalamud.dll not found after extracting $url" }
-
-          $env:DALAMUD_HOME = $dalamudDll.Directory.FullName
-          "DALAMUD_HOME=$($env:DALAMUD_HOME)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Restore
-        run: dotnet restore
-
-      - name: Build (Release)
-        run: dotnet build -c Release --no-restore
-
-      - name: Prepare release zip
+          Invoke-WebRequest -Uri https://github.com/ffxiv-tc-port/DalamudPluginsTC/releases/download/dalamud-pin-v13.0.0.16/dalamud-api13-net9.zip -OutFile dalamud-pinned.zip
+          Expand-Archive -Force dalamud-pinned.zip "$env:AppData\FFXIVSimpleLauncher\Dalamud\Injector\"
+          Expand-Archive -Force dalamud-pinned.zip "$env:AppData\xivlauncher\Addon\Hooks\dev\"
+      - name: Compute version
         shell: pwsh
         run: |
-          $zip = "bin\\Release\\QuickTransfer\\latest.zip"
-          if (!(Test-Path $zip)) { throw "Expected pack zip not found: $zip" }
-          Copy-Item $zip "QuickTransfer.zip" -Force
-
-      - name: Create GitHub Release
+          $ver = "${{ github.ref_name }}" -replace '^v'
+          "VER=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build with dotnet
+        run: dotnet build QuickTransfer.csproj --configuration Release -p:Version=${{ env.VER }} -p:AssemblyVersion=${{ env.VER }} -p:FileVersion=${{ env.VER }}
+      - name: write version into manifest
+        shell: pwsh
+        run: |
+          $path = './bin/Release/QuickTransfer.json'
+          $json = Get-Content -Raw $path | ConvertFrom-Json
+          $json.AssemblyVersion = "${{ env.VER }}"
+          $json | ConvertTo-Json | Set-Content -Path $path
+      - name: Archive
+        run: Compress-Archive -Path bin/Release/* -DestinationPath QuickTransfer.zip
+      - name: Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
           files: |
             QuickTransfer.zip
+            bin/Release/QuickTransfer.json
+          generate_release_notes: true
