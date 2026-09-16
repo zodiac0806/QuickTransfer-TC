@@ -93,6 +93,11 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     private string lastHoverAddonName = string.Empty;
     private (string AddonName, uint AddonId, long SeenAtMs)? lastHoverAddon;
     private (InventoryType Page, uint AddonId, long SeenAtMs)? lastHoverCompanyChestPage;
+
+    // [TC] 上游在 hover 當下只 decode 了「分頁」就把格號丟掉（out _）。
+    //      批次搬運需要格號，而 AtkDragDropInterface 的 payload 事後再讀可能已經失效
+    //      （右鍵開選單的過程本身就會把 hover 狀態清掉），所以這裡比照辦理，趁新鮮一起存。
+    private (InventoryType Type, int Slot, uint AddonId, long SeenAtMs)? lastHoverCompanyChestCell;
     private (InventoryType Page, uint AddonId, long SeenAtMs)? lastSelectedCompanyChestPage;
     private int companyChestSelectedTabAtkValueIndex = -1;
     private readonly Dictionary<int, Dictionary<int, InventoryType>> companyChestSelectedTabCandidates = new();
@@ -1786,9 +1791,17 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             Configuration.EnableBulkTransfer &&
             string.Equals(args.AddonName, FreeCompanyChestAddonName, StringComparison.OrdinalIgnoreCase))
         {
-            if (TryResolveHoveredSlot(now, out var hoverType, out var hoverSlot) &&
-                IsCompanyChestType(hoverType) &&
-                StartBulkTransfer(hoverType, (uint)hoverSlot, now))
+            if (!TryResolveHoveredSlot(now, out var hoverType, out var hoverSlot) ||
+                !IsCompanyChestType(hoverType))
+            {
+                // 解析不到起點格就講出來，不然使用者只會看到「按了沒反應」。
+                ChatGui.Print("[QuickTransfer] 批次搬運：抓不到你點的是儲物櫃哪一格。把滑鼠停在該格上再按一次 Ctrl＋Shift＋右鍵。");
+                if (Configuration.DebugMode)
+                    Log.Information($"[QuickTransfer] 批次搬運（儲物櫃）解析失敗：type={hoverType} slot={hoverSlot}");
+                return;
+            }
+
+            if (StartBulkTransfer(hoverType, (uint)hoverSlot, now))
             {
                 lastActionTickMs = now;
                 ArmSuppressContextMenu(now, 1500);
@@ -2551,7 +2564,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     {
         try
         {
-            if (!Configuration.Enabled || !Configuration.EnableMiddleClickSort)
+            // [TC] 批次搬運靠這裡追蹤滑鼠停在哪一格（公會儲物櫃的右鍵選單沒有別的來源），
+            //      所以不能只綁在「中鍵整理」的開關上。
+            if (!Configuration.Enabled || (!Configuration.EnableMiddleClickSort && !Configuration.EnableBulkTransfer))
                 return;
 
             if (args is not AddonReceiveEventArgs recv)
@@ -2673,10 +2688,16 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
                     {
                         try
                         {
-                            if (TryGetSlotFromDragDropInterface(hDdi, out var hoverInvType, out _))
+                            if (TryGetSlotFromDragDropInterface(hDdi, out var hoverInvType, out var hoverSlotIndex))
                             {
                                 if (IsCompanyChestType(hoverInvType))
+                                {
                                     lastHoverCompanyChestPage = (hoverInvType, hAddonId, now);
+
+                                    // [TC] 批次搬運要用到格號，趁 payload 還有效先存下來。
+                                    if (hoverSlotIndex >= 0)
+                                        lastHoverCompanyChestCell = (hoverInvType, hoverSlotIndex, hAddonId, now);
+                                }
                             }
                         }
                         catch

@@ -82,6 +82,17 @@ public sealed unsafe partial class Plugin
         invType = default;
         slot = -1;
 
+        // 優先用 hover 當下就 decode 好的儲物櫃格子。AtkDragDropInterface 的 payload
+        // 事後再讀可能已經失效——上游解析分頁時同樣是趁新鮮先存起來，不是事後才讀。
+        var cell = lastHoverCompanyChestCell;
+        if (cell != null && now - cell.Value.SeenAtMs <= 5000)
+        {
+            invType = cell.Value.Type;
+            slot = cell.Value.Slot;
+            if (slot >= 0)
+                return true;
+        }
+
         var hover = lastHoverDdi;
         if (hover == null || now - hover.Value.SeenAtMs > 3000)
             return false;
