@@ -159,15 +159,19 @@ public sealed unsafe partial class Plugin
 
             var scale = addon->Scale <= 0 ? 1f : addon->Scale;
 
-            var cells = new List<(float X, float Y, float W, float H)>();
-            var radioChecked = new List<bool>();
-            CollectChestNodes(&addon->UldManager, scale, 0, cells, radioChecked);
+            var allCells = new List<(float X, float Y, float W, float H)>();
+            var radios = new List<(uint NodeId, bool Checked, bool Selected)>();
+            CollectChestNodes(&addon->UldManager, scale, 0, allCells, radios);
 
-            if (cells.Count == 0)
+            if (allCells.Count == 0)
             {
                 diag = $"找不到任何格子節點（游標 {mouseX},{mouseY}）";
                 return false;
             }
+
+            // 實測收到 68 個格子節點，但儲物櫃只有 50 格——多出來的是別的東西。
+            // 真正的格子尺寸一致且數量最多，用尺寸分組取最大那一群，避免排名被雜訊擠掉。
+            var cells = FilterGridCells(allCells);
 
             // 游標壓著哪一格：有重疊時取面積最小的。
             var hit = -1;
@@ -214,8 +218,6 @@ public sealed unsafe partial class Plugin
                 return false;
             }
 
-            // 分頁：哪一顆分頁鈕是 checked。
-            var checkedIndex = radioChecked.IndexOf(true);
             var pageCandidates = new List<InventoryType>();
             foreach (var t in Enum.GetValues<InventoryType>())
             {
@@ -225,24 +227,27 @@ public sealed unsafe partial class Plugin
 
             pageCandidates.Sort(static (a, b) => ((int)a).CompareTo((int)b));
 
-            if (checkedIndex >= 0 && checkedIndex < pageCandidates.Count)
+            if (TryResolveChestPageIndex(addon, radios, out var pageIndex, out var how) &&
+                pageIndex >= 0 && pageIndex < pageCandidates.Count)
             {
-                var page = pageCandidates[checkedIndex];
+                var page = pageCandidates[pageIndex];
                 if (TryGetItemInfo(page, rank, out var itemId, out _, out var qty) && itemId != 0 && qty != 0)
                 {
                     invType = page;
                     slot = rank;
-                    diag = $"{page}/{rank}＝{DescribeItem(itemId)}x{qty}（格子 {cells.Count}，分頁鈕 {radioChecked.Count} 第 {checkedIndex} 顆）";
+                    diag = $"{page}/{rank}＝{DescribeItem(itemId)}x{qty}（格子 {cells.Count}，分頁 {how}）";
                     return true;
                 }
 
-                diag = $"分頁鈕指向 {(int)page}，但該頁第 {rank} 格是空的（格子 {cells.Count}，分頁鈕 {radioChecked.Count} 第 {checkedIndex} 顆）";
+                diag = $"分頁 {(int)page}（{how}）的第 {rank} 格是空的（格子 {cells.Count}）";
                 DumpCompanyChestState(addon, rank);
+                DumpRadios(radios);
                 return false;
             }
 
-            diag = $"讀不到目前分頁（格子 {cells.Count}，排名 {rank}，分頁鈕 {radioChecked.Count} 顆都沒 checked）";
+            diag = $"讀不到目前分頁（格子 {cells.Count}，排名 {rank}）";
             DumpCompanyChestState(addon, rank);
+            DumpRadios(radios);
             return false;
         }
         catch (Exception ex)
@@ -250,6 +255,138 @@ public sealed unsafe partial class Plugin
             diag = $"例外 {ex.GetType().Name}";
             Log.Warning(ex, "[QuickTransfer] 儲物櫃格子解析失敗。");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 從一堆節點裡挑出真正的格子：格子尺寸一致且數量最多，取尺寸相同的最大那一群。
+    /// </summary>
+    private static List<(float X, float Y, float W, float H)> FilterGridCells(
+        List<(float X, float Y, float W, float H)> all)
+    {
+        var groups = new Dictionary<(int, int), List<(float X, float Y, float W, float H)>>();
+        foreach (var c in all)
+        {
+            var key = ((int)Math.Round(c.W), (int)Math.Round(c.H));
+            if (!groups.TryGetValue(key, out var list))
+            {
+                list = [];
+                groups[key] = list;
+            }
+
+            list.Add(c);
+        }
+
+        var best = all;
+        var bestCount = 0;
+        foreach (var kv in groups)
+        {
+            if (kv.Value.Count > bestCount)
+            {
+                bestCount = kv.Value.Count;
+                best = kv.Value;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// 問出現在開在第幾個分頁。分頁鈕的 IsSelected 實測全是 false，所以多備幾條路，
+    /// 哪條先給出答案就用哪條；全部失敗時呼叫端會把細節倒出來。
+    /// </summary>
+    private bool TryResolveChestPageIndex(
+        AtkUnitBase* addon,
+        List<(uint NodeId, bool Checked, bool Selected)> radios,
+        out int pageIndex,
+        out string how)
+    {
+        pageIndex = -1;
+        how = string.Empty;
+
+        // 1) 收集到的分頁鈕裡，哪一顆 IsChecked。
+        for (var i = 0; i < radios.Count; i++)
+        {
+            if (!radios[i].Checked)
+                continue;
+
+            pageIndex = i;
+            how = $"radio#{i} IsChecked";
+            return true;
+        }
+
+        // 2) 退而求其次，IsSelected。
+        for (var i = 0; i < radios.Count; i++)
+        {
+            if (!radios[i].Selected)
+                continue;
+
+            pageIndex = i;
+            how = $"radio#{i} IsSelected";
+            return true;
+        }
+
+        // 3) 直接照 node id 找分頁鈕。DailyRoutines 對儲物櫃分頁用的是 nodeId 10+index，
+        //    這裡掃一段範圍而不是寫死 5 顆，順便容忍版本差異。
+        for (uint nodeId = 8; nodeId <= 20; nodeId++)
+        {
+            try
+            {
+                var node = addon->UldManager.SearchNodeById(nodeId);
+                if (node == null)
+                    continue;
+
+                var compNode = node->GetAsAtkComponentNode();
+                if (compNode == null || compNode->Component == null)
+                    continue;
+
+                if (compNode->Component->GetComponentType() != ComponentType.RadioButton)
+                    continue;
+
+                var radio = (AtkComponentRadioButton*)compNode->Component;
+                if (!radio->IsChecked && !radio->IsSelected)
+                    continue;
+
+                // 找到被選中的那顆之後，往回推它是第幾顆分頁鈕。
+                var index = 0;
+                for (uint probe = 8; probe < nodeId; probe++)
+                {
+                    var n2 = addon->UldManager.SearchNodeById(probe);
+                    if (n2 == null)
+                        continue;
+
+                    var c2 = n2->GetAsAtkComponentNode();
+                    if (c2 != null && c2->Component != null &&
+                        c2->Component->GetComponentType() == ComponentType.RadioButton)
+                        index++;
+                }
+
+                pageIndex = index;
+                how = $"nodeId {nodeId} → 第 {index} 顆";
+                return true;
+            }
+            catch
+            {
+                // 下一個
+            }
+        }
+
+        return false;
+    }
+
+    private void DumpRadios(List<(uint NodeId, bool Checked, bool Selected)> radios)
+    {
+        try
+        {
+            var parts = new List<string>();
+            foreach (var r in radios)
+                parts.Add($"{r.NodeId}:{(r.Checked ? "C" : "-")}{(r.Selected ? "S" : "-")}");
+
+            ChatGui.Print($"[QT/dump] 分頁鈕 {radios.Count} 顆 [{string.Join(" ", parts)}]");
+        }
+        catch
+        {
+            // 診斷失敗不影響主流程
         }
     }
 
@@ -321,7 +458,7 @@ public sealed unsafe partial class Plugin
         float scale,
         int depth,
         List<(float X, float Y, float W, float H)> cells,
-        List<bool> radioChecked)
+        List<(uint NodeId, bool Checked, bool Selected)> radios)
     {
         if (uld == null || depth > 10)
             return;
@@ -353,8 +490,17 @@ public sealed unsafe partial class Plugin
 
                 case ComponentType.RadioButton:
                 {
-                    try { radioChecked.Add(((AtkComponentRadioButton*)component)->IsSelected); }
-                    catch { radioChecked.Add(false); }
+                    // IsSelected 在儲物櫃分頁鈕上實測全是 false，所以兩個旗標都收，哪個有反應用哪個。
+                    try
+                    {
+                        var radio = (AtkComponentRadioButton*)component;
+                        radios.Add((node->NodeId, radio->IsChecked, radio->IsSelected));
+                    }
+                    catch
+                    {
+                        radios.Add((node->NodeId, false, false));
+                    }
+
                     break;
                 }
 
@@ -384,7 +530,7 @@ public sealed unsafe partial class Plugin
                 }
             }
 
-            CollectChestNodes(&component->UldManager, scale, depth + 1, cells, radioChecked);
+            CollectChestNodes(&component->UldManager, scale, depth + 1, cells, radios);
         }
     }
 
