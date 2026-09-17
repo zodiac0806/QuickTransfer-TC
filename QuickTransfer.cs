@@ -55,6 +55,9 @@ public sealed class Configuration : IPluginConfiguration
     // 每次搬運之間的間隔。太短會被伺服器當成連點擋下來。
     public int BulkTransferDelayMs { get; set; } = 250;
 
+    // Alt＋Shift＋右鍵：取出兵裝庫裡沒被任何配裝用到的裝備。
+    public bool EnableUnusedGearPull { get; set; } = true;
+
     // 排除清單：這些道具不搬（其他全搬）。
     public List<uint> BulkExcludeItemIds { get; set; } = [];
 
@@ -1026,6 +1029,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         // [TC] Ctrl＋Shift 同時按住＝批次搬運。這個 mode 不走選單文字比對，
         //      所以不需要在 ContextMenuHandler.ModifierMode 也加一份。
         Bulk,
+
+        // [TC] Alt＋Shift 同時按住＝把兵裝庫這個部位裡沒被配裝用到的裝備取回背包。
+        UnusedGear,
     }
 
     // Inventory/armoury uses this; saddlebags often do not, so we also use IContextMenu fallback.
@@ -1668,6 +1674,22 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             if (StartBulkTransfer(inventoryType, (uint)slot, bulkNow))
             {
                 lastActionTickMs = bulkNow;
+                TryCloseCurrentContextMenu(agent);
+            }
+
+            return;
+        }
+
+        // [TC] Alt＋Shift＋右鍵：把這個兵裝庫部位裡沒被任何配裝用到的裝備取回背包。
+        if (mode == ModifierMode.UnusedGear)
+        {
+            if (!IsArmouryType(inventoryType))
+                return;
+
+            var gearNow = Environment.TickCount64;
+            if (StartUnusedGearPull(inventoryType, gearNow))
+            {
+                lastActionTickMs = gearNow;
                 TryCloseCurrentContextMenu(agent);
             }
 
@@ -4623,9 +4645,11 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         var ctrlDown = KeyState[VirtualKey.CONTROL] || nowMs - lastCtrlSeenMs <= latchWindowMs;
         var shiftDown = KeyState[VirtualKey.SHIFT] || nowMs - lastShiftSeenMs <= latchWindowMs;
 
-        // [TC] Ctrl＋Shift 要排在最前面判斷，否則會被下面的 Ctrl 分支先吃掉。
+        // [TC] 組合鍵要排在單鍵前面判斷，否則會被下面的 Alt／Ctrl 分支先吃掉。
         if (Configuration.EnableBulkTransfer && ctrlDown && shiftDown && !altDown)
             return ModifierMode.Bulk;
+        if (Configuration.EnableUnusedGearPull && altDown && shiftDown && !ctrlDown)
+            return ModifierMode.UnusedGear;
 
         if (altDown)
             return ModifierMode.Alt;

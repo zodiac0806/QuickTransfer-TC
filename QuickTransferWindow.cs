@@ -202,6 +202,15 @@ public class QuickTransferWindow : Window, IDisposable
             ImGui.SameLine();
             ImGui.TextColored(new Vector4(0.85f, 0.75f, 0.45f, 0.9f), "(too low gets throttled by the server)".L());
 
+            var enableUnused = _config.EnableUnusedGearPull;
+            if (ImGui.Checkbox("Enable Armoury gearset cleanup (Alt+Shift+RClick)".L() + "###EnableUnusedGearPull", ref enableUnused))
+            {
+                _config.EnableUnusedGearPull = enableUnused;
+                _config.Save();
+            }
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 0.7f), "(pulls gear no gearset uses out of that compartment)".L());
+
             ImGui.Spacing();
             ImGui.Text("Exclude list (move everything except these):".L());
             if (ImGui.InputTextMultiline("###BulkExclude", ref _excludeText, 4096, new Vector2(-1, 60)))
@@ -246,6 +255,8 @@ public class QuickTransferWindow : Window, IDisposable
             ImGui.BulletText("Bulk direction follows whatever is open: Inventory to (Retainer > Company Chest > Saddlebag > Armoury), or back to Inventory.".L());
             ImGui.BulletText("Depositing into the Armoury routes each piece to its own compartment; non-gear is skipped.".L());
             ImGui.BulletText("Slots skipped by the include/exclude list do not count against the slot budget.".L());
+            ImGui.BulletText("Hold ALT+SHIFT and RIGHT-CLICK inside an Armoury compartment to pull out every piece no gearset uses.".L());
+            ImGui.BulletText("Gearset cleanup ignores the include/exclude lists, and keeps anything referenced as gear or as a glamour.".L());
             ImGui.BulletText("Inventory + Saddlebags: Inventory → \"Add All to Saddlebag\", Saddlebags → \"Remove All from Saddlebag\"".L());
             ImGui.BulletText("Armoury + Saddlebags: Armoury → \"Add All to Saddlebag\"".L());
             ImGui.BulletText("Inventory + Retainer: Inventory → \"Entrust to Retainer\", Retainer → \"Retrieve from Retainer\"".L());

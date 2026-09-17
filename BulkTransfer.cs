@@ -49,6 +49,12 @@ public sealed unsafe partial class Plugin
         public int Moved;
         public int Skipped;
 
+        /// <summary>只搬「沒被任何配裝用到」的裝備。此時忽略排除／指定清單——那兩份清單是別的用途。</summary>
+        public bool UnusedGearOnly;
+
+        /// <summary>被配裝用到、不可搬走的 item id（base id）。</summary>
+        public HashSet<uint> ProtectedItemIds;
+
         public long NextAttemptAtMs;
         public long ExpiresAtMs;
 
@@ -1041,13 +1047,27 @@ public sealed unsafe partial class Plugin
                 continue;
             }
 
-            // 清單過濾。被跳過的格子不算進「搬幾格」的配額——配額是「搬了幾格」，
-            // 不是「看過幾格」，不然設 10 格可能一個都沒搬到。
-            if (!ShouldMoveItem(itemId))
+            if (bulk.UnusedGearOnly)
             {
-                bulk.Skipped++;
-                AdvanceBulkSlot();
-                continue;
+                // 配裝要用的就留著。這個模式不吃排除／指定清單，兩者用途不同，
+                // 混在一起只會讓人搞不清楚為什麼某件裝備沒被搬。
+                if (IsProtectedByGearset(itemId))
+                {
+                    bulk.Skipped++;
+                    AdvanceBulkSlot();
+                    continue;
+                }
+            }
+            else
+            {
+                // 清單過濾。被跳過的格子不算進「搬幾格」的配額——配額是「搬了幾格」，
+                // 不是「看過幾格」，不然設 10 格可能一個都沒搬到。
+                if (!ShouldMoveItem(itemId))
+                {
+                    bulk.Skipped++;
+                    AdvanceBulkSlot();
+                    continue;
+                }
             }
 
             // 存進兵裝庫時，目標容器要看這件裝備是什麼部位。
@@ -1215,9 +1235,12 @@ public sealed unsafe partial class Plugin
 
         var moved = bulk.Moved;
         var skipped = bulk.Skipped;
+        var unusedGearOnly = bulk.UnusedGearOnly;
         bulk = default;
 
-        var tail = skipped > 0 ? " " + "?? slots skipped by the list.".L(skipped) : string.Empty;
+        var tail = skipped <= 0
+            ? string.Empty
+            : " " + (unusedGearOnly ? "?? kept (used by a gearset).".L(skipped) : "?? slots skipped by the list.".L(skipped));
         ChatGui.Print("[QuickTransfer] Bulk transfer finished: ?? Moved ?? slots.??".L(why, moved, tail));
     }
 
