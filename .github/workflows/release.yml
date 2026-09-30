@@ -50,3 +50,5 @@ jobs:
             QuickTransfer.zip
             bin/Release/QuickTransfer.json
           generate_release_notes: true
+
+# 2026-09-30: 預設分支改為 tw-fix 後 touch 本檔,讓 Actions 註冊台服版 release workflow
